@@ -299,32 +299,45 @@ buffered_data_return_t channelFilter(const overlap_save_buffer_double_t *inputSa
         // fill impulse response buffer from file
         // pull the samples from a file called impulseResponse.raw
         int impulseResponseFile = open("data/impulseResponse.raw", O_RDONLY);
-        if(impulseResponseFile == -1)
-            fprintf(stderr, "unable to open data/impulseResponse.raw file for channel equalization filter.\n");
-        // file format:
-        //  S32_LE PCM mono samples
-        //  so 4 bytes per sample
-        for(int i = 0; i < inputSamples->M; i++)
+        if(impulseResponseFile != -1)   // check that the file is readable
         {
-            // for type punning
-            union __attribute__((packed))
+            // file format:
+            //  S32_LE PCM mono samples
+            //  so 4 bytes per sample
+            for(int i = 0; i < inputSamples->M; i++)
             {
-               int32_t value;
-               struct
-               {
-                    uint8_t bytes[4];
-               };
-            } readSample;
+                // for type punning
+                union __attribute__((packed))
+                {
+                   int32_t value;
+                   struct
+                   {
+                        uint8_t bytes[4];
+                   };
+                } readSample;
 
-            // read 4 bytes at a time into the type punning structure
-            int readBytes;
-            if((readBytes = read(impulseResponseFile, &readSample.bytes, sizeof(readSample.bytes))) == 0)
-                fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied!\n");
+                // read 4 bytes at a time into the type punning structure
+                int readBytes;
+                if((readBytes = read(impulseResponseFile, &readSample.bytes, sizeof(readSample.bytes))) == 0)
+                    fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied!\n");
 
-            impulseResponse.buffer[i] = (double)readSample.value / INT32_MAX;    // convert to a double between -1 and 1
+                impulseResponse.buffer[i] = (double)readSample.value / INT32_MAX;    // convert to a double between -1 and 1
+            }
+            close(impulseResponseFile);
+
+        } else {
+            // if the file isn't readable
+            fprintf(stderr, "unable to open data/impulseResponse.raw file for channel equalization filter.\nUsing a default degenerate impulse response.\n");
+
+            // make up a default impulse response, ie, 1 at the start, and zeros everywhere else
+            for(int i = 0; i < inputSamples->M; i++)
+            {
+                impulseResponse.buffer[i] = 0;
+            }
+            impulseResponse.buffer[0] = 1;
         }
-        close(impulseResponseFile);
 
+        // set remaining values to zero
         for(int i = 0; i < inputSamples->L; i++)
         {
             impulseResponse.buffer[i + inputSamples->M] = 0;
@@ -809,21 +822,31 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             if(n - OFDMstate->state.symbolStart == 0)
                             {
                                 // set new symbol for testing
+                                // a new symbol is chosen for transmission at the beginning of it's guard period.
+                                // right now it just chooses a random symbol, but presumably you'd choose this based on some data input
+                                // it can be modulated with any IQ method. QPSK is one idea, but you could choose any IQ constellation to encode data. it could also be
+                                // a different constellation for each sub channel, useful for taking advantage of low noise subchannels without increasing
+                                // error rates on noisy channels
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
-                                    //if(1)
-                                    if(k > 250 && k < 250+10)
+                                    if(1)   // transmit on all subchannels
+                                    //if(k > 250 && k < 250+10) // using a select number of channels to simplify the signal for testing
                                     {
                                         //OFDMstate->currentOFDMSymbol[k] = 
                                         OFDMstate->OFDMsymbol.frequencyDomain[k] = 
-                                            //0;
-                                            rand() % 2 * 2 - 1 +
-                                            I*(rand() % 2 * 2 - 1);   // QPSK
-                                            //1+I;
-                                            //(double)(rand() % 4) / 2 - 1; // 4 level
+
+                                            //0; // I=0 Q=0
+                                            //1+I; // I=1 Q=1
+
+                                            //rand() % 2 * 2 - 1 +
+                                            //I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
+
+                                            (double)(rand() % 4) / 2 - 1; // 4 levels of I I= -1 -0.5 0.5 1, Q=0
+
                                             //rand() % 2 +
-                                            //I*(rand() % 2); // on off key
-                                            //rand() % 3 - 1; // zero sometimes
+                                            //I*(rand() % 2); // on off key // random between I=0 or 1 and Q=0 or 1
+
+                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 4 constellation points
                                         
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
 
@@ -1112,7 +1135,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     // audio sample rate
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 60;
+    long length = sampleRate * 15;
     // the number of the current sample
     long n = 0;
 
