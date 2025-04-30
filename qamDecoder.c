@@ -1283,11 +1283,13 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 pow(point_d2l, 2) -
                 pow(point_dl, 2);
 
+            // I think this causes issues with quiet tones auto correlating to high values and triggering a frame detection. I don't know the solution
             OFDMstate->autoCorrelation.sample = fabs(iterativeAutocorrelation) / secondHalfEnergy; // normalization to remove average gain dependance
+
             if(secondHalfEnergy == 0)
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
 
-            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // normalization to remove average gain dependance
+            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1824,7 +1826,7 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    //debugPlots.OFDMtimingSyncEnabled = 1;
+    debugPlots.OFDMtimingSyncEnabled = 1;
     debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMIQEnabled = 1;
 

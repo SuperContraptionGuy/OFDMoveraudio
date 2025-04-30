@@ -248,6 +248,31 @@ iqsample_t sequentialIQ(int symbolIndex, int square)
     return symbol;
 }
 
+// some IQ generators for the OFDM implimentation
+
+// generate a linear constellation on the I axis of 'levels' number of points
+fftw_complex fftw_ASK(int levels)
+{
+    return (double)(rand() % levels) / (levels - 1) * 2.0 - 1;
+}
+
+// generate a square QAM constelation grid with side length 'square'
+//  for example, 16QAM would be square=4
+fftw_complex fftw_squareQAM(int square)
+{
+
+    return 
+        (double)(rand() % square) / (square - 1) * 2. - 1. +
+        I*((double)(rand() % square) / (square - 1) * 2. - 1);   // random 64QAM, 64 constellation points
+}
+
+                                            //rand() % 2 +
+                                            //I*(rand() % 2); // on off key // random between I=0 or 1 and Q=0 or 1
+
+                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
+
+                                            //rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
+
 /*
  *  performs a DFT based linear convolution using overlap and save method
  *  length of inputSamples should be the impulse response length plus the filter block length
@@ -636,7 +661,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         
         // initialize channel simulation filter
         OFDMstate->simulateNoise = 0;
-        OFDMstate->simulateChannel = 1;
+        OFDMstate->simulateChannel = 0;
 
         if(OFDMstate->simulateChannel)
         {
@@ -821,7 +846,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
                             if(n - OFDMstate->state.symbolStart == 0)
                             {
-                                // set new symbol for testing
+                                // set new OFDM symbol for testing, that's one IQ pair for each subchannel
                                 // a new symbol is chosen for transmission at the beginning of it's guard period.
                                 // right now it just chooses a random symbol, but presumably you'd choose this based on some data input
                                 // it can be modulated with any IQ method. QPSK is one idea, but you could choose any IQ constellation to encode data. it could also be
@@ -833,20 +858,52 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     //if(k > 250 && k < 250+10) // using a select number of channels to simplify the signal for testing
                                     {
                                         //OFDMstate->currentOFDMSymbol[k] = 
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = 
+                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] = 
 
                                             //0; // I=0 Q=0
                                             //1+I; // I=1 Q=1
 
-                                            //rand() % 2 * 2 - 1 +
-                                            //I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
-
-                                            (double)(rand() % 4) / 2 - 1; // 4 levels of I I= -1 -0.5 0.5 1, Q=0
+                                            //(double)(rand() % 4) / 2 - 1; // 4 levels of I I= -1 -0.5 0.5 1, Q=0
 
                                             //rand() % 2 +
                                             //I*(rand() % 2); // on off key // random between I=0 or 1 and Q=0 or 1
 
-                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 4 constellation points
+                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
+
+                                            //rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
+
+                                            //rand() % 2 * 2 - 1 +
+                                            //I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
+                                            
+                                            //rand() % 4 / 3. * 2. - 1. +
+                                            //I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
+
+                                            //rand() % 8 / 7. * 2. - 1. +
+                                            //I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
+
+                                        // do a different modulation on different channels
+                                        if(k % 5 == 0)
+                                            OFDMstate->OFDMsymbol.frequencyDomain[k] = 
+                                                rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
+                                        if(k % 5 == 1)
+                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
+                                                rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
+                                        if(k % 5 == 2)
+                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
+                                                rand() % 2 * 2 - 1 +
+                                                I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
+                                        if(k % 5 == 3)
+                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
+                                                rand() % 4 / 3. * 2. - 1. +
+                                                I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
+                                        if(k % 5 == 4)
+                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
+                                                rand() % 8 / 7. * 2. - 1. +
+                                                I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
+
+
+                                        //constellations[k%
+
                                         
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
 
@@ -1135,7 +1192,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     // audio sample rate
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 15;
+    long length = sampleRate * 60;
     // the number of the current sample
     long n = 0;
 
@@ -1217,8 +1274,8 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     if (outputstd == 0)
     {
         // for the file writing
-        char filename[30] = {0};
-        len = snprintf(filename, 30, "%s.wav", filenameInput);
+        char filename[80] = {0};
+        len = snprintf(filename, 80, "%s.wav", filenameInput);
 
         if (len < 0)
         {
@@ -1226,7 +1283,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
             retval = 5;
             goto exit;
         }
-        else if (len == 30)
+        else if (len == 80)
         {
             fprintf(stderr, "Failed to get filename: truncated\n");
             retval = 5;
