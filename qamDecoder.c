@@ -1289,7 +1289,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             if(secondHalfEnergy == 0)
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
 
-            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
+            // uncomment to disable the shitty auto gain
+            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1406,7 +1407,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 if(debugPlots.OFDMIQEnabled)
                 {
                     // draw a point for every subchannel
-                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2;
+                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 7;
                     for(int k = 0; k < OFDMstate->channels; k++)
                     {
                         // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
@@ -1826,14 +1827,14 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    debugPlots.OFDMtimingSyncEnabled = 1;
-    debugPlots.OFDMdecoderEnabled = 1;
+    //debugPlots.OFDMtimingSyncEnabled = 1;
+    //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMIQEnabled = 1;
 
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < 44100 * 60; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < 44100 * 45; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer

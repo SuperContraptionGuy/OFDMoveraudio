@@ -16,6 +16,7 @@ CFLAGS := \
 	-Wsign-conversion \
 	-Wformat-security \
 	-Wstack-protector \
+	-Wno-unused-function \
 	-flto \
 	-g3 \
 	-std=gnu18 \

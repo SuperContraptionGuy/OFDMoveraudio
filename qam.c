@@ -266,12 +266,182 @@ fftw_complex fftw_squareQAM(int square)
         I*((double)(rand() % square) / (square - 1) * 2. - 1);   // random 64QAM, 64 constellation points
 }
 
-                                            //rand() % 2 +
-                                            //I*(rand() % 2); // on off key // random between I=0 or 1 and Q=0 or 1
 
-                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
+typedef enum
+{
+    ORION,
+    URSA_MAJOR,
+    LYRA,
+    URSA_MINOR,
+    ANDROMEDA,
+    CYGNUS,
+    CANIS_MAJOR,
 
-                                            //rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
+    CONSTELLATION_MAX,
+} constellation;    // a series of fields
+
+// uses the stars of orion for the constellation
+fftw_complex fftw_starQAM(constellation name)
+{
+    name = name % CONSTELLATION_MAX;
+    int length;
+    fftw_complex normalizationFactor = (20+10*I);
+    fftw_complex *stars;
+
+    fftw_complex orion[8] =
+    {
+        11 + 2 *I,
+        7  + 3 *I,
+        14 + 4 *I,
+        9  + 6 *I,
+        11 + 6 *I,
+        13 + 6 *I,
+        15 + 8 *I,
+        8  + 9 *I
+    };
+    fftw_complex ursa_major[7] =
+    {
+        I*2  + 5,
+        I*3  + 8,
+        I*4  + 9,
+        I*6  + 11,
+        I*8  + 9,
+        I*9  + 17,
+        I*10 + 13
+    };
+    fftw_complex lyra[] =
+    {
+        2*I + 12,
+        3*I + 16,
+        4*I + 12,
+        5*I + 7 ,
+        8*I + 11,
+        9*I + 6 ,
+    };
+    fftw_complex ursa_minor[] =
+    {
+        2*I + 13,
+        3*I + 11,
+        5*I + 10,
+        7*I + 11,
+        8*I + 8 ,
+        9*I + 14,
+        10*I + 11,
+    };
+    fftw_complex andromeda[] =
+    {
+        1*I + 19,
+        3*I + 6,
+        4*I + 9,
+        4*I + 17,
+        6*I + 12,
+        9*I + 4,
+    };
+    fftw_complex cygnus[] =
+    {
+        2*I +  18,
+        3*I +  9,
+        4*I +  15,
+        5*I +  11,
+        7*I +  7,
+        7*I +  15,
+        8*I +  4,
+        9*I +  18,
+    };
+    fftw_complex canis_major[] =
+    {
+        1 *I + 13,
+        2 *I + 10,
+        3 *I + 11,
+        4 *I + 14,
+        5 *I + 20,
+        7 *I + 8,
+        9 *I + 6,
+        10*I + 1,
+        10*I + 10,
+    };
+
+    //stars = ursa_major;
+    //length = sizeof(orion) / sizeof(stars[0]);
+
+    if(name == ORION)
+    {
+        stars = orion;
+        length = sizeof(orion) / sizeof(stars[0]);
+    }
+    else if(name == URSA_MAJOR)
+    {
+        stars = ursa_major;
+        length = sizeof(ursa_major) / sizeof(stars[0]);
+    }
+    else if(name == LYRA)
+    {
+        stars = lyra;
+        length = sizeof(lyra) / sizeof(stars[0]);
+    }
+    else if(name == URSA_MINOR)
+    {
+        stars = ursa_minor;
+        length = sizeof(ursa_minor) / sizeof(stars[0]);
+    }
+    else if(name == ANDROMEDA)
+    {
+        stars = andromeda;
+        length = sizeof(andromeda) / sizeof(stars[0]);
+    }
+    else if(name == CYGNUS)
+    {
+        stars = cygnus;
+        length = sizeof(cygnus) / sizeof(stars[0]);
+    }
+    else if(name == CANIS_MAJOR)
+    {
+        stars = canis_major;
+        length = sizeof(canis_major) / sizeof(stars[0]);
+    }
+    else
+    {
+        fprintf(stderr, "unknown constellation type: %d/n", name);
+        return 0;
+    }
+
+    // calculate the average position of the constellation to balance the
+    // weight of the phase components so hopefully you don't get clipping of the waveform
+    fftw_complex average = 0;
+    for(int i = 0; i < length; i++)
+        average += stars[i];
+    average /= length;
+
+    // choose a random point in the selected constellation
+    int index = rand() % length;
+
+    //return 0;
+    return (creal(stars[index] - average) / creal(normalizationFactor) + cimag(stars[index] - average) / cimag(normalizationFactor) * -I);
+    //return stars[index] / cimag(normalizationFactor) * 2 - 1 - I;
+}
+
+fftw_complex fftw_multiQAM(int k)
+{
+    // do a different modulation on different channels
+    if(k % 5 == 0)
+        return rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
+    if(k % 5 == 1)
+        return rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
+    if(k % 5 == 2)
+        return
+            rand() % 2 * 2 - 1 +
+            I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
+    if(k % 5 == 3)
+        return
+            rand() % 4 / 3. * 2. - 1. +
+            I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
+    if(k % 5 == 4)
+        return
+            rand() % 8 / 7. * 2. - 1. +
+            I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
+
+    return 0;
+}
 
 /*
  *  performs a DFT based linear convolution using overlap and save method
@@ -660,7 +830,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband) ie niquist
         
         // initialize channel simulation filter
-        OFDMstate->simulateNoise = 0;
+        OFDMstate->simulateNoise = 1;
         OFDMstate->simulateChannel = 0;
 
         if(OFDMstate->simulateChannel)
@@ -855,55 +1025,14 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
                                     if(1)   // transmit on all subchannels
+                                    //if(k > 250 && k < 6000)
                                     //if(k > 250 && k < 250+10) // using a select number of channels to simplify the signal for testing
                                     {
                                         //OFDMstate->currentOFDMSymbol[k] = 
-                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] = 
 
-                                            //0; // I=0 Q=0
-                                            //1+I; // I=1 Q=1
-
-                                            //(double)(rand() % 4) / 2 - 1; // 4 levels of I I= -1 -0.5 0.5 1, Q=0
-
-                                            //rand() % 2 +
-                                            //I*(rand() % 2); // on off key // random between I=0 or 1 and Q=0 or 1
-
-                                            //rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
-
-                                            //rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
-
-                                            //rand() % 2 * 2 - 1 +
-                                            //I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
-                                            
-                                            //rand() % 4 / 3. * 2. - 1. +
-                                            //I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
-
-                                            //rand() % 8 / 7. * 2. - 1. +
-                                            //I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
-
-                                        // do a different modulation on different channels
-                                        if(k % 5 == 0)
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] = 
-                                                rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
-                                        if(k % 5 == 1)
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
-                                                rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
-                                        if(k % 5 == 2)
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
-                                                rand() % 2 * 2 - 1 +
-                                                I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
-                                        if(k % 5 == 3)
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
-                                                rand() % 4 / 3. * 2. - 1. +
-                                                I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
-                                        if(k % 5 == 4)
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
-                                                rand() % 8 / 7. * 2. - 1. +
-                                                I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
-
-
-                                        //constellations[k%
-
+                                        
+                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_starQAM(k);
+                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_starQAM(3);
                                         
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
 
@@ -994,7 +1123,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
     // add noise to output after channel filtering
     if(OFDMstate->simulateNoise)
     {
-        double noiseAmplitude = 0.01;
+        double noiseAmplitude = 0.003;
         equalizedSample.sample += (double)rand() / ((double)RAND_MAX / (noiseAmplitude)) - (noiseAmplitude / 2);
     }
 
@@ -1192,7 +1321,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     // audio sample rate
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 60;
+    long length = sampleRate * 45;
     // the number of the current sample
     long n = 0;
 

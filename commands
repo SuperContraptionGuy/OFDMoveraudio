@@ -8,7 +8,7 @@ qamDecoder takes samples directly from stdin, so arecord can pull samples from t
 
 This helps cut out the first second of audio while alsa actually prepares the mic amplifier
     arecord -r 44100 -c 1 -f S32_LE -d 1 > /dev/null; ./qam test & arecord -c 1 -r 44100 -f S32_LE | ./qamDecoder
-    arecord -r 44100 -c 1 -f S32_LE -d 1 > /dev/null; ./build/qam ./data/test & arecord -c 1 -r 44100 -f S32_LE | ./build/qamDecoder
+    arecord -r 44100 -c 1 -f S32_LE -d 1 > /dev/null; ../build/qam test & arecord -c 1 -r 44100 -f S32_LE | ../build/qamDecoder
 
 or, you can pipe samples directly stdout | stdin if you pass '-' as the filename to qam
     ./qam - | ./qamDecoder
