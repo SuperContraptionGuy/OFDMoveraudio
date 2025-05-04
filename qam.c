@@ -253,7 +253,18 @@ iqsample_t sequentialIQ(int symbolIndex, int square)
 // generate a linear constellation on the I axis of 'levels' number of points
 fftw_complex fftw_ASK(int levels)
 {
+    if(levels < 2)
+        return 0;
     return (double)(rand() % levels) / (levels - 1) * 2.0 - 1;
+}
+
+fftw_complex fftw_PSK(int levels)
+{
+    if(levels < 2)
+        return 0;
+    double angle = 2*M_PI / levels;
+    int index = rand() % levels;
+    return cos(angle * index) + sin(angle * index)*I;
 }
 
 // generate a square QAM constelation grid with side length 'square'
@@ -261,148 +272,894 @@ fftw_complex fftw_ASK(int levels)
 fftw_complex fftw_squareQAM(int square)
 {
 
+    if(square < 2)
+        return 0;
+
     return 
-        (double)(rand() % square) / (square - 1) * 2. - 1. +
-        I*((double)(rand() % square) / (square - 1) * 2. - 1);   // random 64QAM, 64 constellation points
+        ((double)(rand() % square) / (square - 1) * 2. - 1. +
+        I*((double)(rand() % square) / (square - 1) * 2. - 1))/M_SQRT2;   // random (square)QAM, square^2 constellation points
 }
 
+// a hexagonal array of points with the length of two adjacent sides as edgeLength
+fftw_complex fftw_hexQAM(int gridSize)
+{
+    // the points will be layed out with three basis vectors over three two dimensional parallelagram shaped fields
 
+    int edgeLength = ceil((double)gridSize / 2);    // convert length of two sides to length of one side.
+    // determin if the pattern has a constellation point at the origin or not. also changes some offsets and number of points to draw
+    int hasCenter = 0;
+    int n_field;    // number of points in each field depends on if the grid is centered or offset
+    if(gridSize % 2 == 1)
+    //if(1)
+    {
+        hasCenter = 1;
+        // total number of points is the number of points in one parallelogram field (not counting one connecting edge) times 3 plus the center point
+        n_field = (edgeLength - 1) * edgeLength;
+    } else {
+        n_field = edgeLength * edgeLength;
+    }
+
+    int n_total = n_field * 3;
+    if(hasCenter)
+        n_total += 1;
+
+    int index = rand() % n_total;
+    if(index == n_total - 1 && hasCenter) // the last value
+        return 0;   // return the center point if there is one and the index hit it
+
+    // the index of the field to use
+    int field = index / n_field;
+    // the index of the point within a field
+    int subIndex = index % n_field;
+    //int x = subIndex / edgeLength;
+    int x = subIndex / edgeLength;
+    if(hasCenter)
+        x += 1; // skip one row by starting at 1 instead of 0 if there is a center
+    int y = subIndex % edgeLength;
+
+    // the angles of the two basis vectors to use
+    double angle1 = 2 * M_PI / 3 * field;
+    double angle2 = angle1 + 2 * M_PI / 3;
+    // the two basis vectors to use for constructing a field
+    fftw_complex basis1 = cos(angle1) + sin(angle1)*I;
+    fftw_complex basis2 = cos(angle2) + sin(angle2)*I;
+
+    // the angle of the offset vector
+    double offsetAngle = angle1 + 2*M_PI/12;
+    double offsetLength = sin(2*M_PI/12) / sin(2*M_PI/3);
+    fftw_complex offsetVector = offsetLength*cos(offsetAngle) + offsetLength*sin(offsetAngle)*I;
+
+    // calculate point in the field's grid
+    fftw_complex point = (basis1 * x + basis2 * y);
+    //double normalizationFactor = (double)gridSize / 2;
+    if(hasCenter)
+        return point / (edgeLength - 1);
+    else
+        // normalization factor is a bit different for a non-centered hex grid
+        return (point + offsetVector) / sqrt(pow(edgeLength-1, 2) + pow(offsetLength, 2) - 2*(edgeLength-1)*(offsetLength)*cos(M_PI - 2*M_PI/12));
+}
+
+fftw_complex fftw_multiQAM(int k, int maxSize)
+{
+    // multi
+    if(k / maxSize % 4 == 0)
+        return fftw_hexQAM(k % maxSize + 1);
+    else if(k / maxSize % 4 == 1)
+        return fftw_squareQAM(k % maxSize + 1);
+    else if(k / maxSize % 4 == 2)
+        return fftw_PSK(k % maxSize + 1);
+    else if(k / maxSize % 4 == 3)
+        return fftw_ASK(k % maxSize + 1);
+    
+    return 0;
+}
+
+// used for constellation constellations
 typedef enum
 {
-    ORION,
-    URSA_MAJOR,
-    LYRA,
+    OPHIUCHUS,
     URSA_MINOR,
-    ANDROMEDA,
+    ARA,
+    LUPUS,
+    LEO,
+    URSA_MAJOR,
+    PUPPIS,
+    ANTLIA,
+    SAGITTARIUS,
+    LIBRA,
+    CIRCINUS,
     CYGNUS,
+    SCORPIO,
+    CAMELOPARDALIS,
+    GEMINI,
+    CANIS_MINOR,
+    CRUX,
+    BOOTES,
+    CARINA,
+    TAURUS,
+    CANCER,
+    CASSIOPEIA,
+    LYRA,
+    AQUARIUS,
+    CENTAURUS,
+    PISCES,
+    VIRGO,
+    APUS,
+    ORION,
+    CAELUM,
+    ARIES,
+    AQUILA,
     CANIS_MAJOR,
-
+    AURIGA,
+    CAPRICORN,
+    MONOCEROS,
+    CANES_VENATICI,
+    ANDROMEDA,
+    CORONA_BOREALIS,
     CONSTELLATION_MAX,
-} constellation;    // a series of fields
+} constellation;
 
 // uses the stars of orion for the constellation
+// coordinates pulled from starfetch json files in ~/Games
 fftw_complex fftw_starQAM(constellation name)
 {
-    name = name % CONSTELLATION_MAX;
-    int length;
-    fftw_complex normalizationFactor = (20+10*I);
-    fftw_complex *stars;
-
-    fftw_complex orion[8] =
+    const fftw_complex ophiuchus[10] =
     {
-        11 + 2 *I,
-        7  + 3 *I,
-        14 + 4 *I,
-        9  + 6 *I,
-        11 + 6 *I,
-        13 + 6 *I,
-        15 + 8 *I,
-        8  + 9 *I
-    };
-    fftw_complex ursa_major[7] =
-    {
-        I*2  + 5,
-        I*3  + 8,
-        I*4  + 9,
-        I*6  + 11,
-        I*8  + 9,
-        I*9  + 17,
-        I*10 + 13
-    };
-    fftw_complex lyra[] =
-    {
-        2*I + 12,
-        3*I + 16,
-        4*I + 12,
-        5*I + 7 ,
-        8*I + 11,
-        9*I + 6 ,
-    };
-    fftw_complex ursa_minor[] =
-    {
-        2*I + 13,
-        3*I + 11,
-        5*I + 10,
-        7*I + 11,
-        8*I + 8 ,
-        9*I + 14,
-        10*I + 11,
-    };
-    fftw_complex andromeda[] =
-    {
-        1*I + 19,
-        3*I + 6,
-        4*I + 9,
-        4*I + 17,
-        6*I + 12,
-        9*I + 4,
-    };
-    fftw_complex cygnus[] =
-    {
-        2*I +  18,
-        3*I +  9,
-        4*I +  15,
-        5*I +  11,
-        7*I +  7,
-        7*I +  15,
-        8*I +  4,
-        9*I +  18,
-    };
-    fftw_complex canis_major[] =
-    {
-        1 *I + 13,
-        2 *I + 10,
-        3 *I + 11,
-        4 *I + 14,
-        5 *I + 20,
-        7 *I + 8,
-        9 *I + 6,
-        10*I + 1,
-        10*I + 10,
+        7  + 2  * I,
+        12 + 3  * I,
+        16 + 4  * I,
+        6  + 5  * I,
+        18 + 5  * I,
+        5  + 6  * I,
+        17 + 6  * I,
+        15 + 8  * I,
+        4  + 9  * I,
+        12 + 9  * I,
     };
 
-    //stars = ursa_major;
-    //length = sizeof(orion) / sizeof(stars[0]);
+    const fftw_complex ursa_minor[7] =
+    {
+        13 + 2  * I,
+        11 + 3  * I,
+        10 + 5  * I,
+        11 + 7  * I,
+        8  + 8  * I,
+        14 + 9  * I,
+        11 + 10 * I,
+    };
 
-    if(name == ORION)
+    const fftw_complex ara[6] =
     {
-        stars = orion;
-        length = sizeof(orion) / sizeof(stars[0]);
-    }
-    else if(name == URSA_MAJOR)
+        4  + 2  * I,
+        16 + 3  * I,
+        16 + 6  * I,
+        9  + 6  * I,
+        19 + 9  * I,
+        6  + 10 * I,
+    };
+
+    const fftw_complex lupus[9] =
     {
-        stars = ursa_major;
-        length = sizeof(ursa_major) / sizeof(stars[0]);
-    }
-    else if(name == LYRA)
+        6  + 1  * I,
+        11 + 2  * I,
+        2  + 3  * I,
+        8  + 4  * I,
+        12 + 4  * I,
+        16 + 5  * I,
+        11 + 6  * I,
+        17 + 8  * I,
+        12 + 10 * I,
+    };
+
+    const fftw_complex leo[9] =
     {
-        stars = lyra;
-        length = sizeof(lyra) / sizeof(stars[0]);
-    }
-    else if(name == URSA_MINOR)
+        17 + 2  * I,
+        19 + 3  * I,
+        14 + 4  * I,
+        14 + 5  * I,
+        7  + 6  * I,
+        17 + 6  * I,
+        8  + 8  * I,
+        18 + 8  * I,
+        3  + 9  * I,
+    };
+
+    const fftw_complex ursa_major[7] =
     {
-        stars = ursa_minor;
-        length = sizeof(ursa_minor) / sizeof(stars[0]);
-    }
-    else if(name == ANDROMEDA)
+        5  + 2  * I,
+        8  + 3  * I,
+        9  + 4  * I,
+        11 + 6  * I,
+        9  + 8  * I,
+        17 + 9  * I,
+        13 + 10 * I,
+    };
+
+    const fftw_complex puppis[9] =
     {
-        stars = andromeda;
-        length = sizeof(andromeda) / sizeof(stars[0]);
-    }
-    else if(name == CYGNUS)
+        7  + 1  * I,
+        5  + 2  * I,
+        10 + 2  * I,
+        11 + 3  * I,
+        14 + 6  * I,
+        6  + 7  * I,
+        12 + 8  * I,
+        18 + 8  * I,
+        16 + 10 * I,
+    };
+
+    const fftw_complex antlia[4] =
     {
-        stars = cygnus;
-        length = sizeof(cygnus) / sizeof(stars[0]);
-    }
-    else if(name == CANIS_MAJOR)
+        15 + 3  * I,
+        8  + 5  * I,
+        19 + 6  * I,
+        4  + 8  * I,
+    };
+
+    const fftw_complex sagittarius[8] =
     {
-        stars = canis_major;
-        length = sizeof(canis_major) / sizeof(stars[0]);
-    }
-    else
+        12 + 3  * I,
+        6  + 4  * I,
+        8  + 4  * I,
+        14 + 5  * I,
+        4  + 6  * I,
+        17 + 6  * I,
+        6  + 7  * I,
+        13 + 9  * I,
+    };
+
+    const fftw_complex libra[7] =
     {
-        fprintf(stderr, "unknown constellation type: %d/n", name);
-        return 0;
+        12 + 2  * I,
+        18 + 3  * I,
+        7  + 5  * I,
+        4  + 6  * I,
+        17 + 6  * I,
+        12 + 8  * I,
+        13 + 9  * I,
+    };
+
+    const fftw_complex circinus[5] =
+    {
+        8  + 2  * I,
+        12 + 2  * I,
+        11 + 5  * I,
+        11 + 7  * I,
+        12 + 9  * I,
+    };
+
+    const fftw_complex cygnus[8] =
+    {
+        18 + 2  * I,
+        9  + 3  * I,
+        15 + 4  * I,
+        11 + 5  * I,
+        7  + 7  * I,
+        15 + 7  * I,
+        4  + 8  * I,
+        18 + 9  * I,
+    };
+
+    const fftw_complex scorpio[16] =
+    {
+        17 + 1  * I,
+        18 + 2  * I,
+        15 + 3  * I,
+        14 + 4  * I,
+        18 + 4  * I,
+        13 + 5  * I,
+        18 + 5  * I,
+        5  + 7  * I,
+        6  + 7  * I,
+        11 + 7  * I,
+        4  + 8  * I,
+        10 + 8  * I,
+        3  + 9  * I,
+        4  + 10 * I,
+        7  + 10 * I,
+        9  + 10 * I,
+    };
+
+    const fftw_complex camelopardalis[10] =
+    {
+        1  + 1  * I,
+        5  + 2  * I,
+        9  + 3  * I,
+        12 + 5  * I,
+        6  + 6  * I,
+        17 + 7  * I,
+        7  + 8  * I,
+        18 + 8  * I,
+        9  + 10 * I,
+        20 + 10 * I,
+    };
+
+    const fftw_complex gemini[16] =
+    {
+        7  + 1  * I,
+        7  + 2  * I,
+        14 + 2  * I,
+        4  + 3  * I,
+        11 + 3  * I,
+        15 + 3  * I,
+        19 + 3  * I,
+        6  + 5  * I,
+        4  + 6  * I,
+        8  + 6  * I,
+        15 + 6  * I,
+        4  + 9  * I,
+        8  + 9  * I,
+        14 + 9  * I,
+        17 + 9  * I,
+        18 + 10 * I,
+    };
+
+    const fftw_complex canis_minor[2] =
+    {
+        18 + 4  * I,
+        3  + 5  * I,
+    };
+
+    const fftw_complex crux[4] =
+    {
+        10 + 2  * I,
+        16 + 4  * I,
+        5  + 5  * I,
+        13 + 9  * I,
+    };
+
+    const fftw_complex bootes[10] =
+    {
+        7  + 2  * I,
+        12 + 3  * I,
+        4  + 4  * I,
+        12 + 5  * I,
+        8  + 6  * I,
+        13 + 8  * I,
+        8  + 9  * I,
+        17 + 9  * I,
+        7  + 10 * I,
+        18 + 10 * I,
+    };
+
+    const fftw_complex carina[9] =
+    {
+        12 + 1  * I,
+        3  + 2  * I,
+        8  + 3  * I,
+        5  + 5  * I,
+        19 + 5  * I,
+        12 + 7  * I,
+        19 + 8  * I,
+        7  + 9  * I,
+        11 + 10 * I,
+    };
+
+    const fftw_complex taurus[11] =
+    {
+        11 + 2  * I,
+        5  + 3  * I,
+        12 + 4  * I,
+        8  + 5  * I,
+        10 + 6  * I,
+        11 + 6  * I,
+        14 + 8  * I,
+        9  + 9  * I,
+        19 + 9  * I,
+        10 + 10 * I,
+        19 + 10 * I,
+    };
+
+    const fftw_complex cancer[5] =
+    {
+        7  + 2  * I,
+        10 + 4  * I,
+        11 + 5  * I,
+        17 + 7  * I,
+        8  + 8  * I,
+    };
+
+    const fftw_complex cassiopeia[5] =
+    {
+        4  + 3  * I,
+        7  + 5  * I,
+        12 + 5  * I,
+        20 + 6  * I,
+        16 + 8  * I,
+    };
+
+    const fftw_complex lyra[6] =
+    {
+        12 + 2  * I,
+        16 + 3  * I,
+        12 + 4  * I,
+        7  + 5  * I,
+        11 + 8  * I,
+        6  + 9  * I,
+    };
+
+    const fftw_complex aquarius[13] =
+    {
+        10 + 2  * I,
+        11 + 2  * I,
+        12 + 3  * I,
+        15 + 3  * I,
+        4  + 4  * I,
+        6  + 5  * I,
+        17 + 5  * I,
+        12 + 6  * I,
+        7  + 7  * I,
+        5  + 8  * I,
+        12 + 8  * I,
+        4  + 9  * I,
+        19 + 9  * I,
+    };
+
+    const fftw_complex centaurus[11] =
+    {
+        5  + 1  * I,
+        12 + 1  * I,
+        1  + 3  * I,
+        3  + 3  * I,
+        8  + 3  * I,
+        10 + 3  * I,
+        8  + 5  * I,
+        17 + 6  * I,
+        10 + 7  * I,
+        8  + 9  * I,
+        3  + 10 * I,
+    };
+
+    const fftw_complex pisces[18] =
+    {
+        8  + 1  * I,
+        9  + 1  * I,
+        8  + 2  * I,
+        8  + 3  * I,
+        6  + 5  * I,
+        4  + 7  * I,
+        19 + 8  * I,
+        6  + 9  * I,
+        7  + 9  * I,
+        12 + 9  * I,
+        13 + 9  * I,
+        16 + 9  * I,
+        18 + 9  * I,
+        21 + 9  * I,
+        2  + 10 * I,
+        3  + 10 * I,
+        18 + 10 * I,
+        20 + 10 * I,
+    };
+
+    const fftw_complex virgo[9] =
+    {
+        10 + 2  * I,
+        12 + 4  * I,
+        2  + 5  * I,
+        21 + 5  * I,
+        6  + 6  * I,
+        14 + 6  * I,
+        18 + 6  * I,
+        10 + 7  * I,
+        6  + 9  * I,
+    };
+
+    const fftw_complex apus[4] =
+    {
+        4  + 4  * I,
+        10 + 5  * I,
+        7  + 6  * I,
+        19 + 7  * I,
+    };
+
+    const fftw_complex orion[8] =
+    {
+        11 + 2  * I,
+        7  + 3  * I,
+        14 + 4  * I,
+        9  + 6  * I,
+        11 + 6  * I,
+        13 + 6  * I,
+        15 + 8  * I,
+        8  + 9  * I,
+    };
+
+    const fftw_complex caelum[4] =
+    {
+        15 + 2  * I,
+        11 + 4  * I,
+        4  + 5  * I,
+        2  + 8  * I,
+    };
+
+    const fftw_complex aries[4] =
+    {
+        5  + 3  * I,
+        15 + 5  * I,
+        17 + 7  * I,
+        16 + 8  * I,
+    };
+
+    const fftw_complex aquila[7] =
+    {
+        12 + 1  * I,
+        10 + 2  * I,
+        7  + 3  * I,
+        20 + 3  * I,
+        2  + 5  * I,
+        11 + 6  * I,
+        10 + 9  * I,
+    };
+
+    const fftw_complex canis_major[9] =
+    {
+        13 + 1  * I,
+        10 + 2  * I,
+        11 + 3  * I,
+        14 + 4  * I,
+        20 + 5  * I,
+        8  + 7  * I,
+        6  + 9  * I,
+        1  + 10 * I,
+        10 + 10 * I,
+    };
+
+    const fftw_complex auriga[6] =
+    {
+        5  + 2  * I,
+        14 + 2  * I,
+        16 + 4  * I,
+        3  + 6  * I,
+        15 + 8  * I,
+        10 + 10 * I,
+    };
+
+    const fftw_complex capricorn[11] =
+    {
+        3  + 3  * I,
+        19 + 3  * I,
+        5  + 4  * I,
+        8  + 4  * I,
+        12 + 4  * I,
+        18 + 4  * I,
+        17 + 5  * I,
+        5  + 6  * I,
+        7  + 7  * I,
+        14 + 7  * I,
+        12 + 8  * I,
+    };
+
+    const fftw_complex monoceros[9] =
+    {
+        19 + 3  * I,
+        20 + 4  * I,
+        17 + 5  * I,
+        21 + 5  * I,
+        2  + 6  * I,
+        12 + 6  * I,
+        6  + 9  * I,
+        18 + 9  * I,
+        21 + 9  * I,
+    };
+
+    const fftw_complex canes_venatici[8] =
+    {
+        20 + 2  * I,
+        11 + 3  * I,
+        17 + 5  * I,
+        7  + 6  * I,
+        5  + 8  * I,
+        14 + 8  * I,
+        2  + 9  * I,
+        10 + 9  * I,
+    };
+
+    const fftw_complex andromeda[6] =
+    {
+        19 + 1  * I,
+        6  + 3  * I,
+        9  + 4  * I,
+        17 + 4  * I,
+        12 + 6  * I,
+        4  + 9  * I,
+    };
+
+    const fftw_complex corona_borealis[7] =
+    {
+        15 + 3  * I,
+        3  + 5  * I,
+        20 + 5  * I,
+        5  + 7  * I,
+        18 + 7  * I,
+        10 + 8  * I,
+        13 + 8  * I,
+    };
+
+    fftw_complex normalizationFactor = 20 + 10 * I;
+    const fftw_complex *stars = NULL;
+    size_t length = 0;
+
+    switch (name % CONSTELLATION_MAX)
+    {
+        case OPHIUCHUS:
+        {
+            stars = ophiuchus;
+            length = sizeof(ophiuchus) / sizeof(ophiuchus[0]);
+            break;
+        }
+
+        case URSA_MINOR:
+        {
+            stars = ursa_minor;
+            length = sizeof(ursa_minor) / sizeof(ursa_minor[0]);
+            break;
+        }
+
+        case ARA:
+        {
+            stars = ara;
+            length = sizeof(ara) / sizeof(ara[0]);
+            break;
+        }
+
+        case LUPUS:
+        {
+            stars = lupus;
+            length = sizeof(lupus) / sizeof(lupus[0]);
+            break;
+        }
+
+        case LEO:
+        {
+            stars = leo;
+            length = sizeof(leo) / sizeof(leo[0]);
+            break;
+        }
+
+        case URSA_MAJOR:
+        {
+            stars = ursa_major;
+            length = sizeof(ursa_major) / sizeof(ursa_major[0]);
+            break;
+        }
+
+        case PUPPIS:
+        {
+            stars = puppis;
+            length = sizeof(puppis) / sizeof(puppis[0]);
+            break;
+        }
+
+        case ANTLIA:
+        {
+            stars = antlia;
+            length = sizeof(antlia) / sizeof(antlia[0]);
+            break;
+        }
+
+        case SAGITTARIUS:
+        {
+            stars = sagittarius;
+            length = sizeof(sagittarius) / sizeof(sagittarius[0]);
+            break;
+        }
+
+        case LIBRA:
+        {
+            stars = libra;
+            length = sizeof(libra) / sizeof(libra[0]);
+            break;
+        }
+
+        case CIRCINUS:
+        {
+            stars = circinus;
+            length = sizeof(circinus) / sizeof(circinus[0]);
+            break;
+        }
+
+        case CYGNUS:
+        {
+            stars = cygnus;
+            length = sizeof(cygnus) / sizeof(cygnus[0]);
+            break;
+        }
+
+        case SCORPIO:
+        {
+            stars = scorpio;
+            length = sizeof(scorpio) / sizeof(scorpio[0]);
+            break;
+        }
+
+        case CAMELOPARDALIS:
+        {
+            stars = camelopardalis;
+            length = sizeof(camelopardalis) / sizeof(camelopardalis[0]);
+            break;
+        }
+
+        case GEMINI:
+        {
+            stars = gemini;
+            length = sizeof(gemini) / sizeof(gemini[0]);
+            break;
+        }
+
+        case CANIS_MINOR:
+        {
+            stars = canis_minor;
+            length = sizeof(canis_minor) / sizeof(canis_minor[0]);
+            break;
+        }
+
+        case CRUX:
+        {
+            stars = crux;
+            length = sizeof(crux) / sizeof(crux[0]);
+            break;
+        }
+
+        case BOOTES:
+        {
+            stars = bootes;
+            length = sizeof(bootes) / sizeof(bootes[0]);
+            break;
+        }
+
+        case CARINA:
+        {
+            stars = carina;
+            length = sizeof(carina) / sizeof(carina[0]);
+            break;
+        }
+
+        case TAURUS:
+        {
+            stars = taurus;
+            length = sizeof(taurus) / sizeof(taurus[0]);
+            break;
+        }
+
+        case CANCER:
+        {
+            stars = cancer;
+            length = sizeof(cancer) / sizeof(cancer[0]);
+            break;
+        }
+
+        case CASSIOPEIA:
+        {
+            stars = cassiopeia;
+            length = sizeof(cassiopeia) / sizeof(cassiopeia[0]);
+            break;
+        }
+
+        case LYRA:
+        {
+            stars = lyra;
+            length = sizeof(lyra) / sizeof(lyra[0]);
+            break;
+        }
+
+        case AQUARIUS:
+        {
+            stars = aquarius;
+            length = sizeof(aquarius) / sizeof(aquarius[0]);
+            break;
+        }
+
+        case CENTAURUS:
+        {
+            stars = centaurus;
+            length = sizeof(centaurus) / sizeof(centaurus[0]);
+            break;
+        }
+
+        case PISCES:
+        {
+            stars = pisces;
+            length = sizeof(pisces) / sizeof(pisces[0]);
+            break;
+        }
+
+        case VIRGO:
+        {
+            stars = virgo;
+            length = sizeof(virgo) / sizeof(virgo[0]);
+            break;
+        }
+
+        case APUS:
+        {
+            stars = apus;
+            length = sizeof(apus) / sizeof(apus[0]);
+            break;
+        }
+
+        case ORION:
+        {
+            stars = orion;
+            length = sizeof(orion) / sizeof(orion[0]);
+            break;
+        }
+
+        case CAELUM:
+        {
+            stars = caelum;
+            length = sizeof(caelum) / sizeof(caelum[0]);
+            break;
+        }
+
+        case ARIES:
+        {
+            stars = aries;
+            length = sizeof(aries) / sizeof(aries[0]);
+            break;
+        }
+
+        case AQUILA:
+        {
+            stars = aquila;
+            length = sizeof(aquila) / sizeof(aquila[0]);
+            break;
+        }
+
+        case CANIS_MAJOR:
+        {
+            stars = canis_major;
+            length = sizeof(canis_major) / sizeof(canis_major[0]);
+            break;
+        }
+
+        case AURIGA:
+        {
+            stars = auriga;
+            length = sizeof(auriga) / sizeof(auriga[0]);
+            break;
+        }
+
+        case CAPRICORN:
+        {
+            stars = capricorn;
+            length = sizeof(capricorn) / sizeof(capricorn[0]);
+            break;
+        }
+
+        case MONOCEROS:
+        {
+            stars = monoceros;
+            length = sizeof(monoceros) / sizeof(monoceros[0]);
+            break;
+        }
+
+        case CANES_VENATICI:
+        {
+            stars = canes_venatici;
+            length = sizeof(canes_venatici) / sizeof(canes_venatici[0]);
+            break;
+        }
+
+        case ANDROMEDA:
+        {
+            stars = andromeda;
+            length = sizeof(andromeda) / sizeof(andromeda[0]);
+            break;
+        }
+
+        case CORONA_BOREALIS:
+        {
+            stars = corona_borealis;
+            length = sizeof(corona_borealis) / sizeof(corona_borealis[0]);
+            break;
+        }
+
+        default:
+        {
+            fprintf(stderr, "unknown constellation type: %d/n", name);
+            return 0.0;
+        }
     }
 
     // calculate the average position of the constellation to balance the
@@ -420,28 +1177,6 @@ fftw_complex fftw_starQAM(constellation name)
     //return stars[index] / cimag(normalizationFactor) * 2 - 1 - I;
 }
 
-fftw_complex fftw_multiQAM(int k)
-{
-    // do a different modulation on different channels
-    if(k % 5 == 0)
-        return rand() % 2 * 2 - 1; // random BPSK, 2 constellation points
-    if(k % 5 == 1)
-        return rand() % 3 - 1; // zero sometimes // I= -1 0 1 Q=0, 3 constellation points
-    if(k % 5 == 2)
-        return
-            rand() % 2 * 2 - 1 +
-            I*(rand() % 2 * 2 - 1);   // random QPSK IQ value, 4 constellation points
-    if(k % 5 == 3)
-        return
-            rand() % 4 / 3. * 2. - 1. +
-            I*(rand() % 4 / 3. * 2. - 1);   // random 16QAM, 16 constellation points
-    if(k % 5 == 4)
-        return
-            rand() % 8 / 7. * 2. - 1. +
-            I*(rand() % 8 / 7. * 2. - 1);   // random 64QAM, 64 constellation points
-
-    return 0;
-}
 
 /*
  *  performs a DFT based linear convolution using overlap and save method
@@ -493,12 +1228,14 @@ buffered_data_return_t channelFilter(const overlap_save_buffer_double_t *inputSa
 
         // fill impulse response buffer from file
         // pull the samples from a file called impulseResponse.raw
-        int impulseResponseFile = open("data/impulseResponse.raw", O_RDONLY);
+        int impulseResponseFile = open("impulseResponse.raw", O_RDONLY);
         if(impulseResponseFile != -1)   // check that the file is readable
         {
             // file format:
             //  S32_LE PCM mono samples
             //  so 4 bytes per sample
+            //  generated like
+            //      ffmpeg -i impulseResponse.wav -f s32le pipe:1 > impulseResponse.raw
             for(int i = 0; i < inputSamples->M; i++)
             {
                 // for type punning
@@ -512,9 +1249,12 @@ buffered_data_return_t channelFilter(const overlap_save_buffer_double_t *inputSa
                 } readSample;
 
                 // read 4 bytes at a time into the type punning structure
-                int readBytes;
+                int readBytes = {0};
                 if((readBytes = read(impulseResponseFile, &readSample.bytes, sizeof(readSample.bytes))) == 0)
-                    fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied!\n");
+                {
+                    fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied! Attempted reading sample #%d out of %d. Zero filling.\n", i, inputSamples->M);
+                    //readSample.value = 0;
+                }
 
                 impulseResponse.buffer[i] = (double)readSample.value / INT32_MAX;    // convert to a double between -1 and 1
             }
@@ -819,7 +1559,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->state.frame = IDLE;
         OFDMstate->state.frameStart = n;
 
-        OFDMstate->sampleRate = 44100;
+        //OFDMstate->sampleRate = 44100;
         //OFDMstate->guardPeriod = 0.13 * OFDMstate->sampleRate;  // measured impulse response of room lasts like a bit over a tenth of a second would be nice to have this adjusted on the fly
         OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
         //OFDMstate->guardPeriod = 128;   // faster testing
@@ -831,7 +1571,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         
         // initialize channel simulation filter
         OFDMstate->simulateNoise = 1;
-        OFDMstate->simulateChannel = 0;
+        OFDMstate->simulateChannel = 1;
 
         if(OFDMstate->simulateChannel)
         {
@@ -1022,18 +1762,25 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 // it can be modulated with any IQ method. QPSK is one idea, but you could choose any IQ constellation to encode data. it could also be
                                 // a different constellation for each sub channel, useful for taking advantage of low noise subchannels without increasing
                                 // error rates on noisy channels
+                                static int center;
+                                static int width;
+                                if(rand() % 5 == 0 || OFDMstate->state.symbolIndex == 0)
+                                {
+                                    center = rand() % OFDMstate->channels;
+                                    width = rand() % OFDMstate->channels;
+                                }
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
                                     if(1)   // transmit on all subchannels
                                     //if(k > 250 && k < 6000)
-                                    //if(k > 250 && k < 250+10) // using a select number of channels to simplify the signal for testing
+                                    //if(k > 7000 && k < 8000) // using a select number of channels to simplify the signal for testing
+                                    //int startChunk = (OFDMstate->state.symbolIndex / 1 * 100) % OFDMstate->channels / 4;
+                                    //if(k % (OFDMstate->channels / 4) > startChunk && k % (OFDMstate->channels / 4) < startChunk + 10)
+                                    // choose random blocks
+                                    //if(k < center + width / 2 && k > center - width / 2)
                                     {
-                                        //OFDMstate->currentOFDMSymbol[k] = 
-
                                         
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_starQAM(k);
-                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_starQAM(3);
-                                        
+                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_multiQAM(k, 16);
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
 
                                     } else {
@@ -1075,7 +1822,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                     }
 
                     // check for exit from DATA field
-                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 100 - 1) // set number of symbols of data for example
+                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 1000 - 1) // set number of symbols of data for example
                     {
                         OFDMstate->state.frame = IDLE;
                         OFDMstate->state.frameStart = n + 1;
@@ -1206,6 +1953,7 @@ static double WARN_UNUSED calculateSample(int n, int sampleRate)
 
 
     static OFDM_state_t OFDMstate = {0};
+    OFDMstate.sampleRate = sampleRate;
     sample_double_t returnedSample;
 
     static buffered_data_return_t returnValue = AWAITING_SAMPLES;
@@ -1233,7 +1981,7 @@ static double WARN_UNUSED calculateSample(int n, int sampleRate)
 
 // generates a .wav header of 44 bytes long
 // length is the number of samples in the file
-static int WARN_UNUSED writeHeader(int length, int fileDescriptor)
+static int WARN_UNUSED writeHeader(int length, int fileDescriptor, int sampleRate)
 {
     riff_header_t header =
     {
@@ -1246,7 +1994,7 @@ static int WARN_UNUSED writeHeader(int length, int fileDescriptor)
         .length = 16,
         .type = RIFF_TYPE_PCM,
         .channels = 1,
-        .sampleRate = 44100,
+        .sampleRate = sampleRate,
         .dataRate = 176400,
         .blockSize = 4,
         .bitsPerSample = 32,
@@ -1319,9 +2067,11 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     int fileDescriptor = -1;
 
     // audio sample rate
+    // Supported sample rates from alsa-info.sh
+    //     rates [0x560]: 44100 48000 96000 192000
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 45;
+    long length = sampleRate * 15;
     // the number of the current sample
     long n = 0;
 
@@ -1434,7 +2184,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     // first generate the header
     if (outputstd == 0)
     {
-        int ret = writeHeader(length, fileDescriptor);
+        int ret = writeHeader(length, fileDescriptor, sampleRate);
 
         if (ret != 0)
         {

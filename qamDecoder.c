@@ -1127,7 +1127,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         OFDMstate->state.frame = SEARCHING;
         OFDMstate->state.frameStart = sample->sampleIndex;
 
-        OFDMstate->sampleRate = 44100;
+        //OFDMstate->sampleRate = 44100;
+        OFDMstate->sampleRate = sample->sampleRate;
         OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
         //OFDMstate->guardPeriod = 128;
         OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
@@ -1253,7 +1254,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             }
             */
             // simplified iterative version of the auto correlation
-            static double iterativeAutocorrelation = 0;;
+            static double iterativeAutocorrelation = 0;
             static double secondHalfEnergy = 0;
             OFDMstate->autoCorrelation.sample = 0;
             OFDMstate->autoCorrelation.sampleIndex = OFDMstate->preambleDetectorInputBuffer.n - OFDMstate->ofdmPeriod;
@@ -1290,7 +1291,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
 
             // uncomment to disable the shitty auto gain
-            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
+            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1827,14 +1828,16 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    //debugPlots.OFDMtimingSyncEnabled = 1;
+    debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMIQEnabled = 1;
+
+    int sampleRate = 44100;
 
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < 44100 * 45; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 15; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer
@@ -1847,7 +1850,7 @@ int main(void)
 
         // convert to a double ranged from -1 to 1
         sample.sample = (double)sampleConvert.value / INT32_MAX;
-        sample.sampleRate = 44100;
+        sample.sampleRate = sampleRate;
         sample.sampleIndex = audioSampleIndex;
 
         if(debugPlots.waveformEnabled)
