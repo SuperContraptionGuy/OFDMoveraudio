@@ -123,6 +123,13 @@ typedef struct __attribute__((packed))
 
 typedef struct
 {
+    fftw_complex *points;   // a pointer to an array of points in the constellation
+    int length;             // the number of points in the constellation
+
+} constellation_complex_t;
+
+typedef struct
+{
     int sampleRate;
     int channels;
 
@@ -154,6 +161,9 @@ typedef struct
         double          *timeDomain;        // array of doubles size ofdmPeriod.
     } OFDMsymbol;
 
+    // constellations array
+    constellation_complex_t *constellations;
+    int constellationsLength;
 
     struct
     {
@@ -188,6 +198,7 @@ typedef struct
 
     } state;
 } OFDM_state_t;
+
 
 
 // some functions to generate IQ streams with different properties
@@ -251,38 +262,102 @@ iqsample_t sequentialIQ(int symbolIndex, int square)
 // some IQ generators for the OFDM implimentation
 
 // generate a linear constellation on the I axis of 'levels' number of points
-fftw_complex fftw_ASK(int levels)
+void fftw_ASK(int levels, constellation_complex_t *constellation)
 {
     if(levels < 2)
-        return 0;
-    return (double)(rand() % levels) / (levels - 1) * 2.0 - 1;
+        levels = 1;
+
+    constellation->points = malloc(sizeof(*constellation->points) * levels);
+    constellation->length = levels;
+
+    if(levels == 1)
+    {
+        constellation->points[0] = 0;
+        return;
+    }
+    double rms = 0;
+    for(int i = 0; i < levels; i++)
+    {
+        constellation->points[i] = (double)i / (levels - 1) * 2.0 - 1;
+        rms += cabs(constellation->points[i]);
+    }
+    // calculate the RMS
+    rms = rms == 0 ? 1 : rms / levels * M_SQRT1_2;
+    for(int i = 0; i < levels; i++)
+    {
+        // correct the RMS power to 1
+        constellation->points[i] /= rms;
+    }
+    return;
 }
 
-fftw_complex fftw_PSK(int levels)
+void fftw_PSK(int levels, constellation_complex_t *constellation)
 {
     if(levels < 2)
-        return 0;
+        levels = 1;
+
+    constellation->points = malloc(sizeof(*constellation->points) * levels);
+    constellation->length = levels;
+
+    if(levels == 1)
+    {
+        constellation->points[0] = 0;
+        return;
+    }
+
     double angle = 2*M_PI / levels;
-    int index = rand() % levels;
-    return cos(angle * index) + sin(angle * index)*I;
+
+    double rms = 0;
+    for(int i = 0; i < levels; i++)
+    {
+        constellation->points[i] = cos(angle * i) + sin(angle * i)*I;
+        rms += cabs(constellation->points[i]);
+    }
+    rms = rms == 0 ? 1 : rms / levels * M_SQRT1_2;
+    for(int i = 0; i < levels; i++)
+        constellation->points[i] /= rms;
+    return;
 }
 
 // generate a square QAM constelation grid with side length 'square'
 //  for example, 16QAM would be square=4
-fftw_complex fftw_squareQAM(int square)
+void fftw_squareQAM(int square, constellation_complex_t *constellation)
 {
 
     if(square < 2)
-        return 0;
+        square = 1;
 
-    return 
-        ((double)(rand() % square) / (square - 1) * 2. - 1. +
-        I*((double)(rand() % square) / (square - 1) * 2. - 1))/M_SQRT2;   // random (square)QAM, square^2 constellation points
+
+    int levels = pow(square, 2);
+    constellation->points = malloc(sizeof(fftw_complex) * levels);
+    constellation->length = levels;
+
+    if(levels == 1)
+    {
+        constellation->points[0] = 0;
+        return;
+    }
+
+
+    double rms = 0;
+    for(int i = 0; i < levels; i++)
+    {
+        constellation->points[i] = 
+            ((double)(i % square) / (square - 1) * 2. - 1. +
+            I*((double)(i / square) / (square - 1) * 2. - 1));     // random (square)QAM, square^2 constellation points
+        rms += cabs(constellation->points[i]);
+    }
+    rms = rms == 0 ? 1 : rms / levels * M_SQRT1_2;
+    for(int i = 0; i < levels; i++)
+        constellation->points[i] /= rms;
+    return;
 }
 
 // a hexagonal array of points with the length of two adjacent sides as edgeLength
-fftw_complex fftw_hexQAM(int gridSize)
+void fftw_hexQAM(int gridSize, constellation_complex_t *constellation)
 {
+    if(gridSize < 1)
+        gridSize = 1;
     // the points will be layed out with three basis vectors over three two dimensional parallelagram shaped fields
 
     int edgeLength = ceil((double)gridSize / 2);    // convert length of two sides to length of one side.
@@ -303,55 +378,57 @@ fftw_complex fftw_hexQAM(int gridSize)
     if(hasCenter)
         n_total += 1;
 
-    int index = rand() % n_total;
-    if(index == n_total - 1 && hasCenter) // the last value
-        return 0;   // return the center point if there is one and the index hit it
+    // allocate array for constellation points
+    constellation->points = malloc(sizeof(*constellation->points) * n_total);
+    constellation->length = n_total;
 
-    // the index of the field to use
-    int field = index / n_field;
-    // the index of the point within a field
-    int subIndex = index % n_field;
-    //int x = subIndex / edgeLength;
-    int x = subIndex / edgeLength;
-    if(hasCenter)
-        x += 1; // skip one row by starting at 1 instead of 0 if there is a center
-    int y = subIndex % edgeLength;
+    double rms = 0;
+    for(int index = 0; index < n_total; index++)
+    {
 
-    // the angles of the two basis vectors to use
-    double angle1 = 2 * M_PI / 3 * field;
-    double angle2 = angle1 + 2 * M_PI / 3;
-    // the two basis vectors to use for constructing a field
-    fftw_complex basis1 = cos(angle1) + sin(angle1)*I;
-    fftw_complex basis2 = cos(angle2) + sin(angle2)*I;
+        if(index == n_total - 1 && hasCenter) // the last value
+        {
+            constellation->points[index] = 0;   // return the center point if there is one and the index hit it
+        } else {
 
-    // the angle of the offset vector
-    double offsetAngle = angle1 + 2*M_PI/12;
-    double offsetLength = sin(2*M_PI/12) / sin(2*M_PI/3);
-    fftw_complex offsetVector = offsetLength*cos(offsetAngle) + offsetLength*sin(offsetAngle)*I;
+            // the index of the field to use
+            int field = index / n_field;
+            // the index of the point within a field
+            int subIndex = index % n_field;
+            //int x = subIndex / edgeLength;
+            int x = subIndex / edgeLength;
+            if(hasCenter)
+                x += 1; // skip one row by starting at 1 instead of 0 if there is a center
+            int y = subIndex % edgeLength;
 
-    // calculate point in the field's grid
-    fftw_complex point = (basis1 * x + basis2 * y);
-    //double normalizationFactor = (double)gridSize / 2;
-    if(hasCenter)
-        return point / (edgeLength - 1);
-    else
-        // normalization factor is a bit different for a non-centered hex grid
-        return (point + offsetVector) / sqrt(pow(edgeLength-1, 2) + pow(offsetLength, 2) - 2*(edgeLength-1)*(offsetLength)*cos(M_PI - 2*M_PI/12));
-}
+            // the angles of the two basis vectors to use
+            double angle1 = 2 * M_PI / 3 * field;
+            double angle2 = angle1 + 2 * M_PI / 3;
+            // the two basis vectors to use for constructing a field
+            fftw_complex basis1 = cos(angle1) + sin(angle1)*I;
+            fftw_complex basis2 = cos(angle2) + sin(angle2)*I;
 
-fftw_complex fftw_multiQAM(int k, int maxSize)
-{
-    // multi
-    if(k / maxSize % 4 == 0)
-        return fftw_hexQAM(k % maxSize + 1);
-    else if(k / maxSize % 4 == 1)
-        return fftw_squareQAM(k % maxSize + 1);
-    else if(k / maxSize % 4 == 2)
-        return fftw_PSK(k % maxSize + 1);
-    else if(k / maxSize % 4 == 3)
-        return fftw_ASK(k % maxSize + 1);
-    
-    return 0;
+            // the angle of the offset vector
+            double offsetAngle = angle1 + 2*M_PI/12;
+            double offsetLength = sin(2*M_PI/12) / sin(2*M_PI/3);
+            fftw_complex offsetVector = offsetLength*cos(offsetAngle) + offsetLength*sin(offsetAngle)*I;
+
+            // calculate point in the field's grid
+            fftw_complex point = (basis1 * x + basis2 * y);
+            //double normalizationFactor = (double)gridSize / 2;
+            if(hasCenter)
+                constellation->points[index] = point / (edgeLength - 1);
+            else
+                // normalization factor is a bit different for a non-centered hex grid
+                constellation->points[index] = (point + offsetVector) / sqrt(pow(edgeLength-1, 2) + pow(offsetLength, 2) - 2*(edgeLength-1)*(offsetLength)*cos(M_PI - 2*M_PI/12));
+        }
+
+        rms += cabs(constellation->points[index]);
+    }
+    rms = rms == 0 ? 1 : rms / n_total * M_SQRT1_2;
+    for(int i = 0; i < n_total; i++)
+        constellation->points[i] /= rms;
+    return;
 }
 
 // used for constellation constellations
@@ -401,7 +478,7 @@ typedef enum
 
 // uses the stars of orion for the constellation
 // coordinates pulled from starfetch json files in ~/Games
-fftw_complex fftw_starQAM(constellation name)
+void fftw_starQAM(constellation name, constellation_complex_t *constellation)
 {
     const fftw_complex ophiuchus[10] =
     {
@@ -1158,12 +1235,23 @@ fftw_complex fftw_starQAM(constellation name)
         default:
         {
             fprintf(stderr, "unknown constellation type: %d/n", name);
-            return 0.0;
+            return;
         }
     }
 
     // calculate the average position of the constellation to balance the
     // weight of the phase components so hopefully you don't get clipping of the waveform
+    // also calculate the normalization factor so the RMS power is 1
+
+    constellation->points = malloc(sizeof(fftw_complex) * length);
+    constellation->length = length;
+
+    if(length < 2)
+    {
+        constellation->points[0] = 0;
+        return;
+    }
+
     fftw_complex average = 0;
     for(int i = 0; i < length; i++)
         average += stars[i];
@@ -1171,9 +1259,18 @@ fftw_complex fftw_starQAM(constellation name)
 
     // choose a random point in the selected constellation
     int index = rand() % length;
+    double RMS = 0;
+    for(int index = 0; index < length; index++)
+    {
+        constellation->points[index] = (creal(stars[index] - average) / creal(normalizationFactor) + cimag(stars[index] - average) / cimag(normalizationFactor) * -I);
+        RMS += cabs(constellation->points[index]);
+    }
+    RMS = RMS == 0 ? 1 : RMS / length * M_SQRT1_2;
 
+    for(int i = 0; i < length; i++)
+        constellation->points[i] /= RMS;
+    return;
     //return 0;
-    return (creal(stars[index] - average) / creal(normalizationFactor) + cimag(stars[index] - average) / cimag(normalizationFactor) * -I);
     //return stars[index] / cimag(normalizationFactor) * 2 - 1 - I;
 }
 
@@ -1252,7 +1349,7 @@ buffered_data_return_t channelFilter(const overlap_save_buffer_double_t *inputSa
                 int readBytes = {0};
                 if((readBytes = read(impulseResponseFile, &readSample.bytes, sizeof(readSample.bytes))) == 0)
                 {
-                    fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied! Attempted reading sample #%d out of %d. Zero filling.\n", i, inputSamples->M);
+                    //fprintf(stderr, "Reached end of impulseResponse.raw before filter was satisfied! Attempted reading sample #%d out of %d. Zero filling.\n", i, inputSamples->M);
                     //readSample.value = 0;
                 }
 
@@ -1573,6 +1670,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->simulateNoise = 1;
         OFDMstate->simulateChannel = 1;
 
+
         if(OFDMstate->simulateChannel)
         {
             // initialize the overlap and save buffer
@@ -1601,6 +1699,14 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
         // initialize fftw plan, using the measure option to calculate the fastest plan, could have a few seconds startup time
         OFDMstate->fftwPlan = fftw_plan_dft_c2r_1d(OFDMstate->ofdmPeriod, OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->OFDMsymbol.timeDomain, FFTW_MEASURE);
+
+        // initialize constellations
+        OFDMstate->constellationsLength = 7;
+        OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
+        for(int i = 0; i < OFDMstate->constellationsLength; i++)
+        {
+            fftw_squareQAM(pow(2, i), &OFDMstate->constellations[i]);
+        }
 
         OFDMstate->initialized = 1;
     }
@@ -1773,6 +1879,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 {
                                     if(1)   // transmit on all subchannels
                                     //if(k > 250 && k < 6000)
+                                    //if(k > 250 && k < 350)
                                     //if(k > 7000 && k < 8000) // using a select number of channels to simplify the signal for testing
                                     //int startChunk = (OFDMstate->state.symbolIndex / 1 * 100) % OFDMstate->channels / 4;
                                     //if(k % (OFDMstate->channels / 4) > startChunk && k % (OFDMstate->channels / 4) < startChunk + 10)
@@ -1780,8 +1887,12 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     //if(k < center + width / 2 && k > center - width / 2)
                                     {
                                         
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = fftw_multiQAM(k, 16);
+                                        // picking a sequential constellation, and a random point in that constellation
+                                        constellation_complex_t constellation = OFDMstate->constellations[k%OFDMstate->constellationsLength];
+                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = constellation.points[rand() % constellation.length];
+                                        //rescale if I'm using only a few channels for higher power 
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
+                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] /= 3;
 
                                     } else {
                                         OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
@@ -2071,7 +2182,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     //     rates [0x560]: 44100 48000 96000 192000
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 15;
+    long length = sampleRate * 120;
     // the number of the current sample
     long n = 0;
 

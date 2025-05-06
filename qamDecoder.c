@@ -139,6 +139,11 @@ typedef struct
     circular_buffer_double_t channelSimulationBuffer;   // holds samples to be used for simulating channel impulse response
     circular_buffer_double_t channelImpulseResponse;    // holds the impulse response of the channel.
 
+    double resamplingRatio; // ratio to multiply by the incoming samples' rates by to time the interpolations.
+    int long sample;    // the current sample number, used by the sample interpolator
+    double samplerAccumulatedPhase; // the time of the sample at index sample
+    circular_buffer_double_t sampleInterpolatorBuffer;  // for resampling
+
     sample_double_t autoCorrelation;        // schmidl timing signal
     sample_double_t autoCorrelationDerivative;
     circular_buffer_double_t autoCorrelationAverageBuffer;
@@ -170,6 +175,7 @@ typedef struct
             GUARD_PERIOD,
             OFDM_PERIOD,
         } symbol;
+
     } state;
 
 } OFDM_properties_t;
@@ -523,6 +529,54 @@ buffered_data_return_t channelFilter(const circular_buffer_double_t *inputSample
     // collect enough input samples ahead of the output timepoint to start filtering
     // do one step of convolution to get one output sample
     return RETURNED_SAMPLE;
+}
+
+buffered_data_return_t interpolateSample(const circular_buffer_double_t *inputSamples, sample_double_t *outputSample, OFDM_properties_t *OFDMstate, debugPlots_t debugPlots)
+{
+    // convert from output sample time to input sample time
+    //double output_clock = OFDMstate->samplerAccumulatedPhase; // the fractional number on samples accumulated up to the current input sample
+    //int output_sample = OFDMstate->sample;
+    //int input_clock = inputSamples->n;
+
+    // determine if we've recieved enough samples, or need to wait for more
+    if(inputSamples->n <= OFDMstate->samplerAccumulatedPhase + ceil((double)inputSamples->length / 2) - 1)    // if last input index is at least half the interpolation filter width in the future, then we can process samples until it's not (The architecture doesn't really allow us to generate multiple output samples for one input sample, so we'll just generate once. This assumes that the input sample rate is always higher than the output sample rate)
+        return AWAITING_SAMPLES;
+
+    // if so, use the kernel to interpolate between input samples to generate an output sample
+    outputSample->sample = 0;
+    for(int i = 0; i < inputSamples->length; i++)
+    {
+        // multiply by impulse response at given offset, and sum
+        int inputSampleIndex = (inputSamples->insertionIndex + 1 + i) % inputSamples->length;  // the index in the buffer of the current input sample being used
+        int inputSampleTime = inputSamples->n - inputSamples->length + 1 + i;   // the time of the current input sample
+        double filterCoordinate = (double)inputSampleTime - OFDMstate->samplerAccumulatedPhase;    // the position on the interpolation filter to multiply by the input sample
+
+        double inputSample = inputSamples->buffer[inputSampleIndex];
+        double filterValue = filterCoordinate < -1 || filterCoordinate > 1 ?    // piece wise function for the 'tent' filter kernel
+                                0 :
+                                filterCoordinate < 0 ?
+                                    filterCoordinate + 1 :
+                                    -filterCoordinate + 1;
+
+        outputSample->sample += inputSample * filterValue;  // convolve the filter kernel with the input samples to get one output sample.
+                                                            // can't use an actual convolution algo since the output samples' phases will likely change
+                                                            // for every output sample as the sample rate ratio is adjusted
+    }
+
+    // output a sample
+    outputSample->sampleRate = OFDMstate->sampleRate;   // the assumed sample rate, though it will be slightly different depending on the  sampling ratio
+    outputSample->sampleIndex = OFDMstate->sample;
+
+    // increase the output sample clock's phase
+    OFDMstate->samplerAccumulatedPhase += 1 / OFDMstate->resamplingRatio;   // add one clock duration to the sampler time
+    OFDMstate->sample++;
+
+    return RETURNED_SAMPLE;
+    // on major issue with this topology is that sometimes I'll need to output two samples after recieving only one.
+    // but only if the input sample rate is lower than the output sample rate
+    // I'm able to output no samples after recieving some, but not more than one sample. And the function isn't called again until a new input
+    // sample is ready. I think the main reason for this issue is that my entire processing function tree is initiated for each recieved sample from the sound card, so effectively it's only called at the sampling frequency, but I may need to call it slightly more often, or a lot more often depending on the resampling ratio
+
 }
 
 buffered_data_return_t raisedCosFilter(const circular_buffer_complex_t *inputSamples, sample_complex_t *outputSample, double cutoffFrequency, debugPlots_t debugPlots)
@@ -1127,8 +1181,10 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         OFDMstate->state.frame = SEARCHING;
         OFDMstate->state.frameStart = sample->sampleIndex;
 
+        // The OFDM sample rate need not be equal to the incoming samples' rates. 
+        // I'll run interpolation on them to bring the down to the OFDM sample rate
         //OFDMstate->sampleRate = 44100;
-        OFDMstate->sampleRate = sample->sampleRate;
+        //OFDMstate->sampleRate = sample->sampleRate;
         OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
         //OFDMstate->guardPeriod = 128;
         OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
@@ -1161,6 +1217,13 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             if(OFDMstate->channelImpulseResponse.buffer == NULL)
                 fprintf(stderr, "ImpulseResponse failed to allocate: %s\n", strerror(errno));
         }
+
+        OFDMstate->resamplingRatio = (double)OFDMstate->sampleRate / sample->sampleRate;
+        OFDMstate->sampleInterpolatorBuffer.length = 2;
+        OFDMstate->sampleInterpolatorBuffer.insertionIndex = 0;
+        OFDMstate->sampleInterpolatorBuffer.buffer = calloc(OFDMstate->channelSimulationBuffer.length, sizeof(double));
+        if(OFDMstate->sampleInterpolatorBuffer.buffer == NULL)
+            fprintf(stderr, "sampleInterpolatorBuffer failed to allocate: %s\n", strerror(errno));
 
         // initialize auto correlation averaging buffer
         OFDMstate->autoCorrelationAverageBuffer.length = 500;
@@ -1226,9 +1289,31 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
     sample_double_t equalizedSample;
     equalizedSample = *sample;
 
-    OFDMstate->preambleDetectorInputBuffer.buffer[OFDMstate->preambleDetectorInputBuffer.insertionIndex] = equalizedSample.sample;
+    // run the sample interpolator
+    //
+    //
+    sample_double_t retimedSample;
+    //retimedSample = equalizedSample;
+
+    OFDMstate->sampleInterpolatorBuffer.n = equalizedSample.sampleIndex;
+    OFDMstate->sampleInterpolatorBuffer.sampleRate = equalizedSample.sampleRate;
+    OFDMstate->sampleInterpolatorBuffer.phase = 0;
+    OFDMstate->sampleInterpolatorBuffer.buffer[OFDMstate->sampleInterpolatorBuffer.insertionIndex] = equalizedSample.sample;
+
+    buffered_data_return_t returnValue = interpolateSample(&OFDMstate->sampleInterpolatorBuffer, &retimedSample, OFDMstate, debugPlots);
+    //buffered_data_return_t returnValue = RETURNED_SAMPLE;
+
+    OFDMstate->sampleInterpolatorBuffer.insertionIndex = (OFDMstate->sampleInterpolatorBuffer.insertionIndex + 1) % OFDMstate->sampleInterpolatorBuffer.length;
+
+    if(returnValue != RETURNED_SAMPLE)
+        return AWAITING_SAMPLES;
+
+    //retimedSample = equalizedSample;
+
+    // then move on to the preamble detector
+    OFDMstate->preambleDetectorInputBuffer.buffer[OFDMstate->preambleDetectorInputBuffer.insertionIndex] = retimedSample.sample;
     // add sample to the ofdm symbol window buffer
-    OFDMstate->preambleDetectorInputBuffer.n = equalizedSample.sampleIndex;
+    OFDMstate->preambleDetectorInputBuffer.n = retimedSample.sampleIndex;
 
 
     // run the state machine
@@ -1291,7 +1376,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
 
             // uncomment to disable the shitty auto gain
-            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
+            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1315,7 +1400,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             if(debugPlots.OFDMtimingSyncEnabled)
             {
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 0, OFDMstate->autoCorrelation.sample);
-                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", equalizedSample.sampleIndex, 1, equalizedSample.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", retimedSample.sampleIndex, 1, retimedSample.sample);
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", sample->sampleIndex, 2, sample->sample);
 
 
@@ -1408,7 +1493,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 if(debugPlots.OFDMIQEnabled)
                 {
                     // draw a point for every subchannel
-                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 7;
+                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;
                     for(int k = 0; k < OFDMstate->channels; k++)
                     {
                         // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
@@ -1832,12 +1917,14 @@ int main(void)
     //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMIQEnabled = 1;
 
-    int sampleRate = 44100;
+    // I might want to slightly over sample the signal for the benefit of interpolation.
+    //     rates [0x560]: 44100 48000 96000 192000
+    int sampleRate = 48000;
 
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 15; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 120; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer
@@ -1867,6 +1954,7 @@ int main(void)
         */
 
         static OFDM_properties_t OFDMstate = {0};
+        OFDMstate.sampleRate = 44100;   // set the main sample rate for the decoder, but the incomming samples could have a higher rate
         demodualteOFDM(&sample, &OFDMstate, debugPlots);
 
 

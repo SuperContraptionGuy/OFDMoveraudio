@@ -37,3 +37,16 @@ Big problem I just figured out was that the gain on my microphone was way too hi
 to something that matches the environment. Not sure how to automate that yet
 But the performance is much better with the mic gain lower. The waveforms don't clip nearly as much.
 
+
+debugging with gdb
+
+make a fifo
+    ffmpeg -i test.wav -f s32le pipe:1 > testFifo
+then in gdb in another terminal (or with & at end of las command), run with input from the fifo
+    (gdb) r < testFifo
+
+it allows you to make a nice pipeline
+
+this command uses ffmpeg to resample the result output of qam and saves a couple files before passing the resampled version off to qamDecoder
+    ../build/qam - | ffmpeg -f s32le -r 44100 -i pipe:0 test.wav -filter:a aresample=osr=192000 test2.wav -y -filter:a aresample=osr=192000 -f s32le pipe:1 | ../build/qamDecoder
+for testing the resampler
