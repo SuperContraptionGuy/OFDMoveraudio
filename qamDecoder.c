@@ -63,6 +63,7 @@ typedef struct
     FILE* channelFilterStdin;
     FILE* OFDMdecoderStdin;
     FILE* OFDMIQStdin;
+    FILE* OFDMinterpolatorStdin;
     union
     {
         struct
@@ -81,6 +82,7 @@ typedef struct
             unsigned int channelFilterEnabled       : 1;
             unsigned int OFDMdecoderEnabled         : 1;
             unsigned int OFDMIQEnabled              : 1;
+            unsigned int OFDMinterpolatorEnabled    : 1;
         };
             unsigned long int flags;
     };
@@ -538,6 +540,10 @@ buffered_data_return_t interpolateSample(const circular_buffer_double_t *inputSa
     //int output_sample = OFDMstate->sample;
     //int input_clock = inputSamples->n;
 
+    if(debugPlots.OFDMinterpolatorEnabled)
+    {
+        fprintf(debugPlots.OFDMinterpolatorStdin, "%i %i %f\n", inputSamples->n, 0, inputSamples->buffer[inputSamples->insertionIndex]);
+    }
     // determine if we've recieved enough samples, or need to wait for more
     if(inputSamples->n <= OFDMstate->samplerAccumulatedPhase + ceil((double)inputSamples->length / 2) - 1)    // if last input index is at least half the interpolation filter width in the future, then we can process samples until it's not (The architecture doesn't really allow us to generate multiple output samples for one input sample, so we'll just generate once. This assumes that the input sample rate is always higher than the output sample rate)
         return AWAITING_SAMPLES;
@@ -562,6 +568,11 @@ buffered_data_return_t interpolateSample(const circular_buffer_double_t *inputSa
                                                             // can't use an actual convolution algo since the output samples' phases will likely change
                                                             // for every output sample as the sample rate ratio is adjusted
     }
+    // graph the interpolator debug plot
+    if(debugPlots.OFDMinterpolatorEnabled)
+    {
+        fprintf(debugPlots.OFDMinterpolatorStdin, "%f %i %f\n", OFDMstate->samplerAccumulatedPhase, 1, outputSample->sample);
+    }
 
     // output a sample
     outputSample->sampleRate = OFDMstate->sampleRate;   // the assumed sample rate, though it will be slightly different depending on the  sampling ratio
@@ -576,6 +587,11 @@ buffered_data_return_t interpolateSample(const circular_buffer_double_t *inputSa
     // but only if the input sample rate is lower than the output sample rate
     // I'm able to output no samples after recieving some, but not more than one sample. And the function isn't called again until a new input
     // sample is ready. I think the main reason for this issue is that my entire processing function tree is initiated for each recieved sample from the sound card, so effectively it's only called at the sampling frequency, but I may need to call it slightly more often, or a lot more often depending on the resampling ratio
+    //
+    // One other solution is to simply have an output sample buffer in addition to an input sample buffer,
+    // with a value attached that specifies how many new values there are, or some other marker
+    // so the consumer knows what samples need to be processed. or else I just have to run
+    // the consumer multiple times for each new sample
 
 }
 
@@ -1218,7 +1234,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 fprintf(stderr, "ImpulseResponse failed to allocate: %s\n", strerror(errno));
         }
 
-        OFDMstate->resamplingRatio = (double)OFDMstate->sampleRate / sample->sampleRate;
+        //OFDMstate->resamplingRatio = (double)OFDMstate->sampleRate / sample->sampleRate;
+        OFDMstate->resamplingRatio = ((double)OFDMstate->sampleRate / (1 + 25./1000000))/ sample->sampleRate;
         OFDMstate->sampleInterpolatorBuffer.length = 2;
         OFDMstate->sampleInterpolatorBuffer.insertionIndex = 0;
         OFDMstate->sampleInterpolatorBuffer.buffer = calloc(OFDMstate->channelSimulationBuffer.length, sizeof(double));
@@ -1903,6 +1920,23 @@ int main(void)
         retval = 13;
         goto exit;
     }
+
+    char *OFDMinterpolatorPlot =
+        "feedgnuplot "
+        "--domain --dataid --lines --points "
+        "--title \"OFDM sample interpolator\" "
+        "--xlabel \"sample time (inputSampleTimed)\" --ylabel \"value\" "
+        "--legend 0 \"Input Samples\" "
+        "--legend 1 \"Output Samples\" "
+    ;
+    debugPlots.OFDMinterpolatorStdin= popen(OFDMinterpolatorPlot, "w");
+    if(debugPlots.OFDMinterpolatorStdin == NULL)
+    {
+        fprintf(stderr, "Failed to create OFDM timing sync plot: %s\n", strerror(errno));
+        retval = 11;
+        goto exit;
+    }
+
     debugPlots.flags = 0;   // reset all the flags
 
     // set some debug flags
@@ -1913,18 +1947,22 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    debugPlots.OFDMtimingSyncEnabled = 1;
+    //debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMIQEnabled = 1;
+    //debugPlots.OFDMinterpolatorEnabled = 1;
 
     // I might want to slightly over sample the signal for the benefit of interpolation.
+    // basically this is taking advantage of ffmpeg's interpolation filters, simplifying my program's architecture
+    // I could internalize the call to ffmpeg, or write my own filter that can handle increasing sample rates rather than just decreasing sample rates
     //     rates [0x560]: 44100 48000 96000 192000
-    int sampleRate = 48000;
+    int sampleRate = 192000;
+    //int upconvertionSampleRate = 192000;
 
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 120; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 20; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer
@@ -2034,6 +2072,11 @@ exit:
     if((debugPlots.OFDMdecoderStdin != NULL) && (fork() == 0))
     {
         pclose(debugPlots.OFDMdecoderStdin);
+        return 0;
+    }
+    if((debugPlots.OFDMinterpolatorStdin != NULL) && (fork() == 0))
+    {
+        pclose(debugPlots.OFDMinterpolatorStdin);
         return 0;
     }
 

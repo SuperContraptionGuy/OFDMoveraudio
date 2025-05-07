@@ -1731,7 +1731,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             }
 
             // check for exit from IDLE frame
-            if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod * 1 - 1) // example of state change based on timing
+            if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod * 0.25 - 1) // example of state change based on timing
             {
                 OFDMstate->state.frame = ACTIVE;
                 OFDMstate->state.frameStart = n + 1;    // starts next index
