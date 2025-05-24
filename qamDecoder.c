@@ -53,7 +53,7 @@ typedef struct
     FILE* fftDebuggerStdin;
     FILE* errorPlotStdin;
     FILE* IQplotStdin;
-    FILE* IQvstimeStdin;
+    FILE* IQvsTimeStdin;
     FILE* eyeDiagramRealStdin;
     FILE* eyeDiagramImaginaryStdin;
     FILE* filterDebugStdin;
@@ -62,7 +62,7 @@ typedef struct
     FILE* OFDMtimingSyncStdin;
     FILE* channelFilterStdin;
     FILE* OFDMdecoderStdin;
-    FILE* OFDMIQStdin;
+    FILE* OFDMrawIQStdin;
     FILE* OFDMinterpolatorStdin;
     union
     {
@@ -81,7 +81,7 @@ typedef struct
             unsigned int OFDMtimingSyncEnabled      : 1;
             unsigned int channelFilterEnabled       : 1;
             unsigned int OFDMdecoderEnabled         : 1;
-            unsigned int OFDMIQEnabled              : 1;
+            unsigned int OFDMrawIQEnabled              : 1;
             unsigned int OFDMinterpolatorEnabled    : 1;
         };
             unsigned long int flags;
@@ -134,7 +134,11 @@ typedef struct
 
     circular_buffer_double_t fftwSymbolBuffer;              // holds the incoming ofdmPeriod number of samples
     circular_buffer_complex_t fftwIQbuffer;             // the decoded symbol
+    circular_buffer_complex_t fftwIQrateDetectorFirstHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
+    circular_buffer_complex_t fftwIQrateDetectorSecondHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
     fftw_plan fftwPlan;
+    fftw_plan fftwRateDetectorFirstHalfPlan;
+    fftw_plan fftwRateDetectorSecondHalfPlan;
     int ofdmPhaseOffset;                        // stores the offset in sample number to start taking cutting out OFDM symbols
 
     int simulateChannel;    // 0 don't simulate, 1 simulate
@@ -145,6 +149,8 @@ typedef struct
     int long sample;    // the current sample number, used by the sample interpolator
     double samplerAccumulatedPhase; // the time of the sample at index sample
     circular_buffer_double_t sampleInterpolatorBuffer;  // for resampling
+
+    circular_buffer_complex_t sfoFirstSymbol;   // sampling frequency offset detector buffer to hold the previous IQ samples
 
     sample_double_t autoCorrelation;        // schmidl timing signal
     sample_double_t autoCorrelationDerivative;
@@ -164,20 +170,15 @@ typedef struct
             ACTIVE,     // found a frame, currently decoding it
         } frame;
 
+        int long processedSymbols;  // counter to keep track of the total OFDM symbols processed, including all fields
+        // I think basically I need a coordinate system for deciding what to do with various channels and odfm symbols
         int long fieldStart;    // estimate of teh beginning of the current field of given type
+        int symbolIndex;     // index of symbol in the current field
         enum
         {
             PREAMBLE,
             DATA,
         } field;
-
-        int long symbolStart;   // offset of the beginning of the current symbol state
-        enum
-        {
-            GUARD_PERIOD,
-            OFDM_PERIOD,
-        } symbol;
-
     } state;
 
 } OFDM_properties_t;
@@ -792,8 +793,8 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
     // if first and second half minimums are below some threshold
     // if maximum overall is above some threshold
     // if the maximum occurs between the minima
-    double lowerThreshold = 0.6;
-    double upperThreshold = 0.7;
+    double lowerThreshold = 0.2;
+    double upperThreshold = 0.25;
     
     // only run the convolution if it's likely to be close, because it's really slow
     if(minimumFirstHalf.sample < lowerThreshold && minimumSecondHalf.sample < lowerThreshold && maximum.sample > upperThreshold)
@@ -1167,7 +1168,7 @@ buffered_data_return_t demodulateQAM(const sample_double_t *sample, QAM_properti
                 cimag(filteredIQsample.sample)
                 );
     if(debugPlots.IQvsTimeEnabled)
-        fprintf(debugPlots.IQvstimeStdin, "%f %f\n", creal(filteredIQsample.sample), cimag(filteredIQsample.sample));
+        fprintf(debugPlots.IQvsTimeStdin, "%f %f\n", creal(filteredIQsample.sample), cimag(filteredIQsample.sample));
 
     // collect samples into a buffer
     timingSyncBuffer.buffer[timingSyncBuffer.insertionIndex] = filteredIQsample.sample;
@@ -1256,6 +1257,14 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         if(OFDMstate->timingFilterInputBuffer.buffer == NULL)
             fprintf(stderr, "Failed to allocate timing input buffer: %s\n", strerror(errno));
 
+        // initialize a buffer to store the second preamble symbol, ie, the first of two identical symbols for sample frequency offset estimation
+        OFDMstate->sfoFirstSymbol.length = OFDMstate->channels;
+        OFDMstate->sfoFirstSymbol.insertionIndex = 0;
+        OFDMstate->sfoFirstSymbol.buffer = calloc(OFDMstate->sfoFirstSymbol.length, sizeof(complex double));
+        if(OFDMstate->sfoFirstSymbol.buffer == NULL)
+            fprintf(stderr, "Failed to allocate preamble first symbol buffer: %s\n", strerror(errno));
+
+
         // initialize ofdm symbol buffer
         OFDMstate->fftwSymbolBuffer.length = OFDMstate->ofdmPeriod;
         OFDMstate->fftwSymbolBuffer.insertionIndex = 0;
@@ -1271,9 +1280,37 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         if(OFDMstate->fftwIQbuffer.buffer == NULL)
             fprintf(stderr, "failed to allocate fftw IQ buffer. %s\n", strerror(errno));
 
-        printf("double complex: %li, fftw_complex: %li\n", sizeof(double complex), sizeof(fftw_complex));
+        // make two buffers to hold the results of DFTs for the first and second half of the symmetric preamble/pilot symbol for sample frequency offset detection
+        OFDMstate->fftwIQrateDetectorFirstHalf.length = OFDMstate->fftwSymbolBuffer.length / 4 + 1; // half the size of half the ofdmsymbol buffer length plus 1
+        OFDMstate->fftwIQrateDetectorFirstHalf.insertionIndex = 0;
+        OFDMstate->fftwIQrateDetectorFirstHalf.buffer = fftw_malloc(sizeof(fftw_complex) * OFDMstate->fftwIQrateDetectorFirstHalf.length);
+        if(OFDMstate->fftwIQrateDetectorFirstHalf.buffer == NULL)
+            fprintf(stderr, "failed to allocate fftw IQ first half sampling rate detector buffer. %s\n", strerror(errno));
 
-        OFDMstate->fftwPlan = fftw_plan_dft_r2c_1d(OFDMstate->ofdmPeriod, OFDMstate->fftwSymbolBuffer.buffer, (fftw_complex*)OFDMstate->fftwIQbuffer.buffer, FFTW_MEASURE);
+        OFDMstate->fftwIQrateDetectorSecondHalf.length = OFDMstate->fftwSymbolBuffer.length / 4 + 1;
+        OFDMstate->fftwIQrateDetectorSecondHalf.insertionIndex = 0;
+        OFDMstate->fftwIQrateDetectorSecondHalf.buffer = fftw_malloc(sizeof(fftw_complex) * OFDMstate->fftwIQrateDetectorSecondHalf.length);
+        if(OFDMstate->fftwIQrateDetectorSecondHalf.buffer == NULL)
+            fprintf(stderr, "failed to allocate fftw IQ second half sampling rate detector buffer. %s\n", strerror(errno));
+
+        // generate fftw plans
+        OFDMstate->fftwPlan = fftw_plan_dft_r2c_1d(
+                OFDMstate->fftwSymbolBuffer.length,
+                OFDMstate->fftwSymbolBuffer.buffer, 
+                (fftw_complex*)OFDMstate->fftwIQbuffer.buffer, 
+                FFTW_MEASURE);
+        OFDMstate->fftwRateDetectorFirstHalfPlan = fftw_plan_dft_r2c_1d(
+                OFDMstate->fftwSymbolBuffer.length / 2,         // size of half fftwSymbolBuffer
+                &OFDMstate->fftwSymbolBuffer.buffer[0],         // points to first half of fftwSymbolBuffer
+                (fftw_complex*)OFDMstate->fftwIQrateDetectorFirstHalf.buffer, 
+                FFTW_MEASURE);
+        OFDMstate->fftwRateDetectorSecondHalfPlan = fftw_plan_dft_r2c_1d(
+                OFDMstate->fftwSymbolBuffer.length / 2,         // size of half fftwSymbolBuffer
+                &OFDMstate->fftwSymbolBuffer.buffer[OFDMstate->fftwSymbolBuffer.length / 2],    // points to second half of fftwSymbolBuffer
+                (fftw_complex*)OFDMstate->fftwIQrateDetectorSecondHalf.buffer, 
+                FFTW_MEASURE);
+        // FYI, I never deallocate the buffers or destroy the plans. Could be bad I guess
+        // fftw manual says deallocate the arrays with fftw_free() and destroy the plans with fftw_destroy_plan()
 
         // run once
         OFDMstate->initialized = 1;
@@ -1317,8 +1354,9 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
     OFDMstate->sampleInterpolatorBuffer.phase = 0;
     OFDMstate->sampleInterpolatorBuffer.buffer[OFDMstate->sampleInterpolatorBuffer.insertionIndex] = equalizedSample.sample;
 
-    buffered_data_return_t returnValue = interpolateSample(&OFDMstate->sampleInterpolatorBuffer, &retimedSample, OFDMstate, debugPlots);
-    //buffered_data_return_t returnValue = RETURNED_SAMPLE;
+    //buffered_data_return_t returnValue = interpolateSample(&OFDMstate->sampleInterpolatorBuffer, &retimedSample, OFDMstate, debugPlots);
+    buffered_data_return_t returnValue = RETURNED_SAMPLE;
+    retimedSample = equalizedSample;
 
     OFDMstate->sampleInterpolatorBuffer.insertionIndex = (OFDMstate->sampleInterpolatorBuffer.insertionIndex + 1) % OFDMstate->sampleInterpolatorBuffer.length;
 
@@ -1464,6 +1502,9 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
 
                 // change state to active
                 OFDMstate->state.frame = ACTIVE;
+                OFDMstate->state.field = PREAMBLE;
+                OFDMstate->state.symbolIndex = 0;
+                OFDMstate->state.processedSymbols = 0;      // how many symbols have been processed so far total
             }
 
 
@@ -1472,22 +1513,23 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
 
             // check if there are enough samples in the preamble buffer to do the next symbol
             int correctedBufferTime = OFDMstate->preambleDetectorInputBuffer.n - OFDMstate->ofdmPhaseOffset + OFDMstate->guardPeriod;
-            static int symbolsProcessed = 0;    // how many symbols have been processed so far
             int symbolIndex = correctedBufferTime / OFDMstate->symbolPeriod;   // calculate the symbol that's currently being filled in the buffer
 
-            // draw the raw sample
+            // draw the raw samples for debug purposes
             if(debugPlots.OFDMdecoderEnabled)
             {
                 fprintf(debugPlots.OFDMdecoderStdin, "%i %i %f\n", correctedBufferTime, 1, OFDMstate->preambleDetectorInputBuffer.buffer[OFDMstate->preambleDetectorInputBuffer.insertionIndex]);
             }
 
-            if(symbolIndex > symbolsProcessed)
+            // check if there are enough samples in the input buffers to process the next sample
+            // ie, is the calculated symbolIndex greater than the last processed symbol index
+            if(symbolIndex > OFDMstate->state.processedSymbols)
             {
                 // it's time to tear out an ofdmPeriod of samples into the fftw buffer and do the math
                 for(int i = 0; i < OFDMstate->ofdmPeriod; i++)
                 {
                     // determine where it is in the buffer
-                    int preambleIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex + (symbolsProcessed * OFDMstate->symbolPeriod + OFDMstate->guardPeriod + i - correctedBufferTime)) % OFDMstate->preambleDetectorInputBuffer.length;
+                    int preambleIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex + (OFDMstate->state.processedSymbols * OFDMstate->symbolPeriod + OFDMstate->guardPeriod + i - correctedBufferTime)) % OFDMstate->preambleDetectorInputBuffer.length;
                     if(preambleIndex < 0)
                         preambleIndex += OFDMstate->preambleDetectorInputBuffer.length;
 
@@ -1497,9 +1539,9 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                     if(debugPlots.OFDMdecoderEnabled)
                     {
                         // draw snipped out portion
-                        //int plotIndex = 3 + symbolsProcessed;
+                        //int plotIndex = 3 + OFDMstate->state.processedSymbols;
                         int plotIndex = 3;
-                        fprintf(debugPlots.OFDMdecoderStdin, "%i %i %f\n", symbolsProcessed * OFDMstate->symbolPeriod + i + OFDMstate->guardPeriod, plotIndex, OFDMstate->fftwSymbolBuffer.buffer[i] - 1);
+                        fprintf(debugPlots.OFDMdecoderStdin, "%li %i %f\n", OFDMstate->state.processedSymbols * OFDMstate->symbolPeriod + i + OFDMstate->guardPeriod, plotIndex, OFDMstate->fftwSymbolBuffer.buffer[i] - 1);
                     }
                 }
 
@@ -1507,10 +1549,10 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 fftw_execute(OFDMstate->fftwPlan);
                 
                 // debug chart for the subchannel IQ plots
-                if(debugPlots.OFDMIQEnabled)
+                if(debugPlots.OFDMrawIQEnabled)
                 {
                     // draw a point for every subchannel
-                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;
+                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;   // sizing the individual charts
                     for(int k = 0; k < OFDMstate->channels; k++)
                     {
                         // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
@@ -1520,16 +1562,63 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
 
                         // plot index for coloring preamble samples
                         int plotIndex = 0;
-                        if(symbolsProcessed < 2)
-                            plotIndex = symbolsProcessed + 1;
+                        if(OFDMstate->state.processedSymbols == 0)   // first preamble symbol
+                            plotIndex = 1;
+                        else if(OFDMstate->state.processedSymbols < 3)   // second and third preamble symbols
+                            plotIndex = 2;
                         
                         // plot each point
-                        fprintf(debugPlots.OFDMIQStdin, "%f %i %f\n", x + creal(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor, plotIndex, y + cimag(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor);
+                        fprintf(debugPlots.OFDMrawIQStdin, "%f %i %f\n", x + creal(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor, plotIndex, y + cimag(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor);
                     }
                 }
 
-                // mark that this symbol was extracted and processed
-                symbolsProcessed++;
+                // then do different things with the data depending on the field
+                switch(OFDMstate->state.field)
+                {
+                    case PREAMBLE:
+
+                        // I'm not doing anything with the first preamble symbol right now
+                        // for the second, store the decoded IQ values into a buffer
+                        if(OFDMstate->state.symbolIndex == 1)
+                        {
+                            for(int i = 0; i < OFDMstate->channels; i++)
+                            {
+                                // copy values
+                                OFDMstate->sfoFirstSymbol.buffer[i] = OFDMstate->fftwIQbuffer.buffer[i];
+                            }
+                        }
+                        // and on the third, do some calculations to estimate the sampling frequency offset
+                        if(OFDMstate->state.symbolIndex == 2)
+                        {
+                            double samplingFrequencyOffsetEstimate = 0;
+                            // calculate sampling frequency offset (skip DC and highest frequency
+                            for(int i = 1; i < OFDMstate->channels - 1; i++)
+                            {
+                                // estimate sampling frequency offset
+                                // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
+                                // result is in hertz
+                                samplingFrequencyOffsetEstimate += carg(OFDMstate->sfoFirstSymbol.buffer[i] / OFDMstate->fftwIQbuffer.buffer[i]) / (2 * M_PI * i * OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1);
+                            }
+                            printf("\n\nsampling frequency offset estimate: %f\n\n", samplingFrequencyOffsetEstimate);
+                        }
+
+                        // check if it's time to exit the preamble
+                        if(OFDMstate->state.symbolIndex == 2)
+                        {
+                            OFDMstate->state.field = DATA;
+                            OFDMstate->state.symbolIndex = 0;   // reset the symbol index for the data field
+                        }
+                        break;
+
+                    case DATA:
+                        // probably run a discriminator to classify the recieved symbols
+                        // could also put in some pilot symbol processing here
+                        break;
+                }
+
+                // mark that this symbol was extracted and processed, increment the symbol index
+                OFDMstate->state.processedSymbols++;
+                OFDMstate->state.symbolIndex++;
             }
 
             break;
@@ -1574,6 +1663,22 @@ int main(void)
     // process arguments
     //  none right now
 
+    // choose debug plots
+    debugPlots.flags = 0;   // reset all the flags
+
+    // set some debug flags
+    //debugPlots.waveformEnabled = 1;
+    //debugPlots.QAMdecoderEnabled = 1;
+    //debugPlots.filterDebugEnabled = 1;
+    //debugPlots.gardnerAlgoEnabled = 1;
+    //debugPlots.eyeDiagramRealEnabled = 1;
+    //debugPlots.eyeDiagramImaginaryEnabled = 1;
+    //debugPlots.channelFilterEnabled = 1;
+    debugPlots.OFDMtimingSyncEnabled = 1;
+    //debugPlots.OFDMdecoderEnabled = 1;
+    debugPlots.OFDMrawIQEnabled = 1;
+    //debugPlots.OFDMinterpolatorEnabled = 1;
+
     // for live plotting, pipe to feedgnuplot
     const char *plot =
         "feedgnuplot "
@@ -1589,13 +1694,16 @@ int main(void)
     //;
 
     // using it to plot the time domain signal
-    debugPlots.waveformPlotStdin = popen(plot, "w");
-
-    if (debugPlots.waveformPlotStdin == NULL)
+    if(debugPlots.waveformEnabled)
     {
-        fprintf(stderr, "Failed to create waveform plot: %s\n", strerror(errno));
-        retval = 1;
-        goto exit;
+        debugPlots.waveformPlotStdin = popen(plot, "w");
+
+        if (debugPlots.waveformPlotStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create waveform plot: %s\n", strerror(errno));
+            retval = 1;
+            goto exit;
+        }
     }
 
     const char *debugPlot =
@@ -1621,14 +1729,16 @@ int main(void)
         "--legend 15 \"window phase\" "
     ;
 
-    // using it to plot the time domain signal
-    debugPlots.fftDebuggerStdin = popen(debugPlot, "w");
-
-    if (debugPlots.fftDebuggerStdin == NULL)
+    if(debugPlots.fftDebugEnabled)
     {
-        fprintf(stderr, "Failed to create fft debug plot: %s\n", strerror(errno));
-        retval = 2;
-        goto exit;
+        debugPlots.fftDebuggerStdin = popen(debugPlot, "w");
+
+        if (debugPlots.fftDebuggerStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create fft debug plot: %s\n", strerror(errno));
+            retval = 2;
+            goto exit;
+        }
     }
 
     const char *errorPlot =
@@ -1642,14 +1752,16 @@ int main(void)
         "--legend 4 \"real target phase offset\" "
     ;
 
-    // using it to plot the time domain signal
-    debugPlots.errorPlotStdin = popen(errorPlot, "w");
-
-    if (debugPlots.errorPlotStdin == NULL)
+    if(debugPlots.errorPlotEnabled)
     {
-        fprintf(stderr, "Failed to create error plot: %s\n", strerror(errno));
-        retval = 3;
-        goto exit;
+        debugPlots.errorPlotStdin = popen(errorPlot, "w");
+
+        if (debugPlots.errorPlotStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create error plot: %s\n", strerror(errno));
+            retval = 3;
+            goto exit;
+        }
     }
 
     //FILE* IQplotStdin = popen("feedgnuplot --domain --points --title \"IQ plot\" --unset key", "w");
@@ -1710,18 +1822,22 @@ int main(void)
         }
     }
 
-    debugPlots.IQplotStdin = popen(iq_plot_buffer, "w");
+    if(debugPlots.IQplotEnabled)
+    {
+        debugPlots.IQplotStdin = popen(iq_plot_buffer, "w");
 
+
+        if (debugPlots.IQplotStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create IQ plot: %s\n", strerror(errno));
+            retval = 6;
+            goto exit;
+        }
+    }
     // Free buffer, even if popen failed
     free(iq_plot_buffer);
     iq_plot_buffer = NULL;
 
-    if (debugPlots.IQplotStdin == NULL)
-    {
-        fprintf(stderr, "Failed to create IQ plot: %s\n", strerror(errno));
-        retval = 6;
-        goto exit;
-    }
 
     // for ploting IQ values over time to hopefully obtain an error function
     char eyeDiagramPlotReal[300] = {0};
@@ -1732,7 +1848,8 @@ int main(void)
         "--title \"Eye Diagram, Real part\" "
         "--xlabel \"Time (Audio sample #)\" --ylabel \"I\" ",
         3000);
-    debugPlots.eyeDiagramRealStdin = popen(eyeDiagramPlotReal, "w");
+    if(debugPlots.eyeDiagramRealEnabled)
+        debugPlots.eyeDiagramRealStdin = popen(eyeDiagramPlotReal, "w");
 
     char eyeDiagramPlotImaginary[300] = {0};
     sprintf(
@@ -1742,7 +1859,8 @@ int main(void)
         "--title \"Eye Diagram, Imaginary part\" "
         "--xlabel \"Time (Audio sample #)\" --ylabel \"Q\" ",
         3000);
-    debugPlots.eyeDiagramImaginaryStdin = popen(eyeDiagramPlotImaginary, "w");
+    if(debugPlots.eyeDiagramImaginaryEnabled)
+        debugPlots.eyeDiagramImaginaryStdin = popen(eyeDiagramPlotImaginary, "w");
 
     // using it to plot the time domain signal
     char IQvstimeplot[300] = {0};
@@ -1753,9 +1871,10 @@ int main(void)
         "--title \"continuous IQ plot\" "
         "--xlabel \"I\" --ylabel \"Q\" "
         );
-    debugPlots.IQvstimeStdin = popen(IQvstimeplot, "w");
+    if(debugPlots.IQvsTimeEnabled)
+        debugPlots.IQvsTimeStdin = popen(IQvstimeplot, "w");
 
-    if (debugPlots.IQvstimeStdin == NULL)
+    if (debugPlots.IQvsTimeStdin == NULL)
     {
         fprintf(stderr, "Failed to create IQ vs Time plot: %s\n", strerror(errno));
         retval = 7;
@@ -1777,12 +1896,15 @@ int main(void)
         "--legend 7 \"Filtered Q\" "
 
     ;
-    debugPlots.filterDebugStdin = popen(filterDebugPlot, "w");
-    if(debugPlots.filterDebugStdin == NULL)
+    if(debugPlots.filterDebugEnabled)
     {
-        fprintf(stderr, "Failed to create filter debug plot: %s\n", strerror(errno));
-        retval = 8;
-        goto exit;
+        debugPlots.filterDebugStdin = popen(filterDebugPlot, "w");
+        if(debugPlots.filterDebugStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create filter debug plot: %s\n", strerror(errno));
+            retval = 8;
+            goto exit;
+        }
     }
 
     char *QAMdemodulatePlot =
@@ -1796,12 +1918,15 @@ int main(void)
         "--legend 6 \"Q\" "
         "--legend 7 \"Phase error signal\" "
     ;
-    debugPlots.QAMdecoderStdin = popen(QAMdemodulatePlot, "w");
-    if(debugPlots.QAMdecoderStdin == NULL)
+    if(debugPlots.QAMdecoderEnabled)
     {
-        fprintf(stderr, "Failed to create QAM decoder debug plot: %s\n", strerror(errno));
-        retval = 9;
-        goto exit;
+        debugPlots.QAMdecoderStdin = popen(QAMdemodulatePlot, "w");
+        if(debugPlots.QAMdecoderStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create QAM decoder debug plot: %s\n", strerror(errno));
+            retval = 9;
+            goto exit;
+        }
     }
 
     char *gardenerAlgoPlot =
@@ -1828,12 +1953,15 @@ int main(void)
         "--legend 19 \"Interpolated mid Q\" "
         "--legend 20 \"sample time Ceil\" "
     ;
-    debugPlots.gardnerAlgoStdin = popen(gardenerAlgoPlot, "w");
-    if(debugPlots.gardnerAlgoStdin == NULL)
+    if(debugPlots.gardnerAlgoEnabled)
     {
-        fprintf(stderr, "Failed to create gardner algo debug plot: %s\n", strerror(errno));
-        retval = 10;
-        goto exit;
+        debugPlots.gardnerAlgoStdin = popen(gardenerAlgoPlot, "w");
+        if(debugPlots.gardnerAlgoStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create gardner algo debug plot: %s\n", strerror(errno));
+            retval = 10;
+            goto exit;
+        }
     }
 
     char *channelFilterPlot =
@@ -1852,12 +1980,15 @@ int main(void)
         "--legend 7 \"inverse impulse response magnitude\" "
         "--legend 8 \"inverse impulse response phase\" "
     ;
-    debugPlots.channelFilterStdin = popen(channelFilterPlot, "w");
-    if(debugPlots.channelFilterStdin == NULL)
+    if(debugPlots.channelFilterEnabled)
     {
-        fprintf(stderr, "Failed to create channel filter plot: %s\n", strerror(errno));
-        retval = 11;
-        goto exit;
+        debugPlots.channelFilterStdin = popen(channelFilterPlot, "w");
+        if(debugPlots.channelFilterStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create channel filter plot: %s\n", strerror(errno));
+            retval = 11;
+            goto exit;
+        }
     }
 
     char *OFDMtimingSyncPlot =
@@ -1879,12 +2010,15 @@ int main(void)
         "--legend 11 \"second half energy\" "
 
     ;
-    debugPlots.OFDMtimingSyncStdin = popen(OFDMtimingSyncPlot, "w");
-    if(debugPlots.OFDMtimingSyncStdin == NULL)
+    if(debugPlots.OFDMtimingSyncEnabled)
     {
-        fprintf(stderr, "Failed to create OFDM timing sync plot: %s\n", strerror(errno));
-        retval = 11;
-        goto exit;
+        debugPlots.OFDMtimingSyncStdin = popen(OFDMtimingSyncPlot, "w");
+        if(debugPlots.OFDMtimingSyncStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create OFDM timing sync plot: %s\n", strerror(errno));
+            retval = 11;
+            goto exit;
+        }
     }
 
     char *OFDMdecoderPlot =
@@ -1895,12 +2029,15 @@ int main(void)
         "--legend 0 \"Preamble detection raw samples\" "
         "--legend 1 \"further raw samples\" "
     ;
-    debugPlots.OFDMdecoderStdin = popen(OFDMdecoderPlot, "w");
-    if(debugPlots.OFDMtimingSyncStdin == NULL)
+    if(debugPlots.OFDMdecoderEnabled)
     {
-        fprintf(stderr, "Failed to create OFDM decoder plot: %s\n", strerror(errno));
-        retval = 12;
-        goto exit;
+        debugPlots.OFDMdecoderStdin = popen(OFDMdecoderPlot, "w");
+        if(debugPlots.OFDMtimingSyncStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create OFDM decoder plot: %s\n", strerror(errno));
+            retval = 12;
+            goto exit;
+        }
     }
 
     char *OFDMIQPlot =
@@ -1909,16 +2046,19 @@ int main(void)
         "--title \"IQ plots for every subchannel\" "
         "--xlabel \"I\" --ylabel \"Q\" "
         "--legend 0 \"Data samples\" "
-        "--legend 1 \"Preamble 1 samples\" "
-        "--legend 2 \"Preamble 2 samples\" "
+        "--legend 1 \"Preamble 1 samples: autocorrelation\" "
+        "--legend 2 \"Preamble 2,3 samples: sample rate estimator\" "
 
     ;
-    debugPlots.OFDMIQStdin = popen(OFDMIQPlot, "w");
-    if(debugPlots.OFDMIQStdin == NULL)
+    if(debugPlots.OFDMrawIQEnabled)
     {
-        fprintf(stderr, "Failed to create OFDM IQ plot: %s\n", strerror(errno));
-        retval = 13;
-        goto exit;
+        debugPlots.OFDMrawIQStdin = popen(OFDMIQPlot, "w");
+        if(debugPlots.OFDMrawIQStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create OFDM IQ plot: %s\n", strerror(errno));
+            retval = 13;
+            goto exit;
+        }
     }
 
     char *OFDMinterpolatorPlot =
@@ -1929,40 +2069,29 @@ int main(void)
         "--legend 0 \"Input Samples\" "
         "--legend 1 \"Output Samples\" "
     ;
-    debugPlots.OFDMinterpolatorStdin= popen(OFDMinterpolatorPlot, "w");
-    if(debugPlots.OFDMinterpolatorStdin == NULL)
+    if(debugPlots.OFDMinterpolatorEnabled)
     {
-        fprintf(stderr, "Failed to create OFDM timing sync plot: %s\n", strerror(errno));
-        retval = 11;
-        goto exit;
+        debugPlots.OFDMinterpolatorStdin= popen(OFDMinterpolatorPlot, "w");
+        if(debugPlots.OFDMinterpolatorStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create OFDM timing sync plot: %s\n", strerror(errno));
+            retval = 11;
+            goto exit;
+        }
     }
 
-    debugPlots.flags = 0;   // reset all the flags
-
-    // set some debug flags
-    //debugPlots.waveformEnabled = 1;
-    //debugPlots.QAMdecoderEnabled = 1;
-    //debugPlots.filterDebugEnabled = 1;
-    //debugPlots.gardnerAlgoEnabled = 1;
-    //debugPlots.eyeDiagramRealEnabled = 1;
-    //debugPlots.eyeDiagramImaginaryEnabled = 1;
-    //debugPlots.channelFilterEnabled = 1;
-    //debugPlots.OFDMtimingSyncEnabled = 1;
-    //debugPlots.OFDMdecoderEnabled = 1;
-    debugPlots.OFDMIQEnabled = 1;
-    //debugPlots.OFDMinterpolatorEnabled = 1;
 
     // I might want to slightly over sample the signal for the benefit of interpolation.
     // basically this is taking advantage of ffmpeg's interpolation filters, simplifying my program's architecture
     // I could internalize the call to ffmpeg, or write my own filter that can handle increasing sample rates rather than just decreasing sample rates
     //     rates [0x560]: 44100 48000 96000 192000
-    int sampleRate = 192000;
+    int sampleRate = 44100;
     //int upconvertionSampleRate = 192000;
 
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 20; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 5; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer
@@ -2010,9 +2139,9 @@ exit:
     }
 
     // close the streams, allowing the plots to render and open a window, then wait for them to terminate in separate threads.
-    if((debugPlots.IQvstimeStdin != NULL) && (fork() == 0))
+    if((debugPlots.IQvsTimeStdin != NULL) && (fork() == 0))
     {
-        pclose(debugPlots.IQvstimeStdin);
+        pclose(debugPlots.IQvsTimeStdin);
         return 0;
     }
 
