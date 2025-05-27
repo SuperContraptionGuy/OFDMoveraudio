@@ -1692,7 +1692,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband) ie niquist
         
         // initialize channel simulation filter
-        OFDMstate->simulateNoise = 1;
+        OFDMstate->simulateNoise = 0;
         OFDMstate->simulateChannel = 0;
 
 
@@ -1796,8 +1796,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             {
                 case PREAMBLE:
 
-                    output = 0.70; // testing only
-
                     switch(OFDMstate->state.symbol)
                     {
                         case GUARD_PERIOD:
@@ -1832,7 +1830,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 200 / 30;
 
-                                    } else if(OFDMstate->state.symbolIndex == 1)
+                                    } else if(OFDMstate->state.symbolIndex % 2 == 1)
                                     {
                                         if(1)
                                         //if(k > 100 && k < 200 && k % 2 == 0)
@@ -1850,13 +1848,10 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                         }
                                         //OFDMstate->currentOFDMSymbol[k] = 0;    // testing
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
-                                    } else if(OFDMstate->state.symbolIndex == 2)
-                                    {
-                                        // don't change the symbols
                                     }
                                 }
                                 // now do the transform
-                                if(OFDMstate->state.symbolIndex != 2)    // only do fft if not the third preamble (to repeat the second symbol twice)
+                                if(OFDMstate->state.symbolIndex%2 == 1 || OFDMstate->state.symbolIndex == 0)    // only do fft if not the third preamble (to repeat the second symbol twice)
                                     fftw_execute(OFDMstate->fftwPlan);
                                 // time domain samples are now in the OFDMstate->OFDMsymbol.timeDomain array
                             }
@@ -1901,7 +1896,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                     }
 
                     // check for exit from PREAMBLE field
-                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 3 - 1)   // for 3 symbol preamble
+                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 2*10+1 - 1)   // for 3 symbol preamble
                     {
                         OFDMstate->state.field = DATA;
                         OFDMstate->state.fieldStart = n + 1;
@@ -2239,7 +2234,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     //     rates [0x560]: 44100 48000 96000 192000
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 5;
+    long length = sampleRate * 20;
     //long length = (1<<12) * 5 + sampleRate * 0.25;
     // the number of the current sample
     long n = 0;
