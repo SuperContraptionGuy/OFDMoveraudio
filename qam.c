@@ -169,6 +169,9 @@ typedef struct
     FILE* dataInput;    // pipe to read data from that will be sent of the channel
     FILE* generatedDataOutput;  // print the randomly generated data that was encoded in a file
 
+    int pilotSymbolsPitch;  // spacing from one pilot subchannel to the next
+    complex double* pilotSymbols;   // an array for storing one time generated pilot symbols
+
     // array length of channels representing the current entire OFDM symbol
     //double complex *currentOFDMSymbol;
     
@@ -1690,6 +1693,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
         OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband) ie niquist
+        OFDMstate->pilotSymbolsPitch = 100;
         
         // initialize channel simulation filter
         OFDMstate->simulateNoise = 0;
@@ -1728,6 +1732,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         // initialize fftw plan, using the measure option to calculate the fastest plan, could have a few seconds startup time
         OFDMstate->fftwPlan = fftw_plan_dft_c2r_1d(OFDMstate->ofdmPeriod, OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->OFDMsymbol.timeDomain, FFTW_MEASURE);
 
+
         // initialize constellations
         OFDMstate->constellationsLength = 16;
         OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
@@ -1741,7 +1746,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             }
 
             // for data channels
-            fftw_squareQAM(2, &OFDMstate->constellations[i]);
+            fftw_squareQAM(i, &OFDMstate->constellations[i]);
 
             /*
             if(i / 16 == 0)
@@ -1753,6 +1758,15 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             else if(i / 16 == 1)
                 fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
                 */
+        }
+
+        // initialize pilot symbols
+        int pilotSymbolsLength = OFDMstate->channels / OFDMstate->pilotSymbolsPitch;
+        OFDMstate->pilotSymbols = malloc(sizeof(complex double) * pilotSymbolsLength);
+        constellation_complex_t constellation = OFDMstate->constellations[0];   // use the first constellation
+        for(int i = 0; i < pilotSymbolsLength; i++)
+        {
+            OFDMstate->pilotSymbols[i] = constellation.points[rand() % constellation.length];
         }
 
         OFDMstate->initialized = 1;
@@ -1806,7 +1820,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 // generate a symetric symbol, with even frequency components only for syncronization
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
-                                    if(OFDMstate->state.symbolIndex == 0)
+                                    if(OFDMstate->state.symbolIndex < 2)    // generate symetric symbols for the first two symbols
                                     {
                                         if(k % 2 == 0)    // every other for repetative symbol
                                         //if(1)
@@ -1827,12 +1841,13 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                             //OFDMstate->currentOFDMSymbol[k] = 0;
                                             OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
                                         }
-
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 200 / 30;
 
-                                    } else if(OFDMstate->state.symbolIndex % 2 == 1)
+                                        // time domain samples are now in the OFDMstate->OFDMsymbol.timeDomain array
+
+                                    } else if(OFDMstate->state.symbolIndex % 2 == 0)    // Then generate two duplicate symbols
                                     {
-                                        if(1)
+                                        if(1)   // pick all subchannels
                                         //if(k > 100 && k < 200 && k % 2 == 0)
                                         //if(k > 446 && k < 446+10)
                                         {
@@ -1851,8 +1866,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     }
                                 }
                                 // now do the transform
-                                if(OFDMstate->state.symbolIndex%2 == 1 || OFDMstate->state.symbolIndex == 0)    // only do fft if not the third preamble (to repeat the second symbol twice)
-                                    fftw_execute(OFDMstate->fftwPlan);
+                                if(OFDMstate->state.symbolIndex%2 == 0 || OFDMstate->state.symbolIndex < 2)    // only do fft for symetric symbols and first of the duplicate symbols
+                                fftw_execute(OFDMstate->fftwPlan);
                                 // time domain samples are now in the OFDMstate->OFDMsymbol.timeDomain array
                             }
 
@@ -1861,7 +1876,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                                         //OFDMstate);
                             output = OFDMstate->OFDMsymbol.timeDomain[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
 
-                            if(OFDMstate->state.symbolIndex == 0)
+                            if(OFDMstate->state.symbolIndex < 2)
                             {
                                 output *= M_SQRT2;  // scale factor for even only channels
                                 //output = 0; // trying no guard period for the first symbol of preamble, to help find the precise sync point
@@ -1881,7 +1896,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                                         //OFDMstate);
                             output = OFDMstate->OFDMsymbol.timeDomain[n - OFDMstate->state.symbolStart];
 
-                            if(OFDMstate->state.symbolIndex == 0)
+                            if(OFDMstate->state.symbolIndex < 2)
                                 output *= M_SQRT2;
                             //output = output;
 
@@ -1896,7 +1911,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                     }
 
                     // check for exit from PREAMBLE field
-                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 2*10+1 - 1)   // for 3 symbol preamble
+                    if(n - OFDMstate->state.fieldStart >= OFDMstate->symbolPeriod * 4 - 1)   // for 3 symbol preamble
                     {
                         OFDMstate->state.field = DATA;
                         OFDMstate->state.fieldStart = n + 1;
@@ -1928,7 +1943,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 }
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
-                                    if(1)   // transmit on all subchannels
+                                    //if(1)   // transmit on all subchannels
                                     //if(k > 250 && k < 6000)
                                     //if(k > 250 && k < 350)
                                     //if(k > 7000 && k < 8000) // using a select number of channels to simplify the signal for testing
@@ -1936,7 +1951,12 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     //if(k % (OFDMstate->channels / 4) > startChunk && k % (OFDMstate->channels / 4) < startChunk + 10)
                                     // choose random blocks
                                     //if(k < center + width / 2 && k > center - width / 2)
+                                    if(k % OFDMstate->pilotSymbolsPitch == 0) // transmit pilot symbols on pilot channels
                                     {
+                                        // pilot symbols
+                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = OFDMstate->pilotSymbols[k / OFDMstate->pilotSymbolsPitch];
+
+                                    } else {    // and use the rest for data channels
                                         
                                         // picking a sequential constellation, and a random point in that constellation discluding the first entry
                                         constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
@@ -1946,8 +1966,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] /= 3;
 
-                                    } else {
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
+                                    //} else {
+                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
                                     }
                                 }
                                 // now do the transform
@@ -2234,7 +2254,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     //     rates [0x560]: 44100 48000 96000 192000
     int sampleRate = 44100;
     // total number of samples to generate
-    long length = sampleRate * 20;
+    long length = sampleRate * 120;
     //long length = (1<<12) * 5 + sampleRate * 0.25;
     // the number of the current sample
     long n = 0;

@@ -8,6 +8,7 @@
 #include <complex.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 
 // Debug flag
@@ -149,12 +150,19 @@ typedef struct
     circular_buffer_double_t channelImpulseResponse;    // holds the impulse response of the channel.
 
     double samplingFrequencyOffsetEstimate; // the estimated frequency offset in hertz
+    double samplingFrequencyOffsetResidual; // remaining frequency offset after resampling corrections, used for phase corrections
     double resamplingRatio; // ratio to multiply by the incoming samples' rates by to time the interpolations.
     int long sample;    // the current sample number, used by the sample interpolator
     double samplerAccumulatedPhase; // the time of the sample at index sample
     circular_buffer_double_t sampleInterpolatorBuffer;  // for resampling
 
+    int disableSFOestimation;   // flag to disable any sfo corrections
     circular_buffer_complex_t sfoFirstSymbol;   // sampling frequency offset detector buffer to hold the previous IQ samples
+    int pilotSymbolsPitch;  // spacing from one pilot subchannel to the next
+    int pilotSymbolsLength;
+    complex double* pilotSymbols;   // an array for storing one time generated pilot symbols
+
+    complex double* channelEstimate;  // equalizer parameters
 
     sample_double_t autoCorrelation;        // schmidl timing signal
     sample_double_t autoCorrelationDerivative;
@@ -180,7 +188,7 @@ typedef struct
         int symbolIndex;     // index of symbol in the current field
         enum
         {
-            PREAMBLE,
+            PREAMBLE, // estimating Sampling Frequency Offset (SFO) and Channel (amplitude phase per subchannel)
             DATA,
         } field;
     } state;
@@ -588,6 +596,12 @@ buffered_data_return_t interpolateSample(const circular_buffer_double_t *inputSa
     OFDMstate->resamplingRatio = ((double)OFDMstate->sampleRate * (1 - OFDMstate->samplingFrequencyOffsetEstimate))/ inputSamples->sampleRate;
     OFDMstate->samplerAccumulatedPhase += 1 / OFDMstate->resamplingRatio;   // add one clock duration to the sampler time
     OFDMstate->sample++;
+
+    // graph the offset used on the SFO estimator plot
+    if(debugPlots.OFDMsfoEstimatorEnabled && outputSample->sampleIndex % (OFDMstate->symbolPeriod / 100) == 0)
+    {
+        fprintf(debugPlots.OFDMsfoEstimatorStdin, "%f %i %f\n", ((double)outputSample->sampleIndex - OFDMstate->ofdmPhaseOffset - OFDMstate->ofdmPeriod) / OFDMstate->symbolPeriod, 2, OFDMstate->samplingFrequencyOffsetEstimate * pow(10, 6));
+    }
 
     return RETURNED_SAMPLE;
     // on major issue with this topology is that sometimes I'll need to output two samples after recieving only one.
@@ -1214,6 +1228,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
         OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
+        OFDMstate->pilotSymbolsPitch = 100;
 
         // initialize buffer to hold input samples for further processing
         //OFDMstate->preambleDetectorInputBuffer.length = OFDMstate->ofdmPeriod + 1;
@@ -1222,6 +1237,27 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         OFDMstate->preambleDetectorInputBuffer.sampleRate = OFDMstate->sampleRate;
         if(OFDMstate->preambleDetectorInputBuffer.buffer == NULL)
             fprintf(stderr, "couldn't allocate ofdm symbol buffer.\n");
+
+        OFDMstate->disableSFOestimation = 0;
+        srand(time(NULL));
+        if(OFDMstate->disableSFOestimation)
+        {
+            //OFDMstate->samplingFrequencyOffsetEstimate = 48/pow(10,6);
+            //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
+            //OFDMstate->samplingFrequencyOffsetResidual = -OFDMstate->samplingFrequencyOffsetEstimate;
+            OFDMstate->samplingFrequencyOffsetEstimate = 0;
+            OFDMstate->samplingFrequencyOffsetResidual = 0;
+        } else {
+            //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
+            OFDMstate->samplingFrequencyOffsetEstimate = 0;
+            OFDMstate->samplingFrequencyOffsetResidual = 0;
+        }
+        OFDMstate->pilotSymbolsLength = OFDMstate->channels / OFDMstate->pilotSymbolsPitch;
+        OFDMstate->pilotSymbols = malloc(sizeof(complex double) * OFDMstate->pilotSymbolsLength);
+
+        OFDMstate->channelEstimate = malloc(sizeof(complex double) * OFDMstate->channels);
+        for(int k = 0; k < OFDMstate->channels; k++)
+            OFDMstate->channelEstimate[k] = 1;
 
         // initialize channel simulation buffer
         OFDMstate->simulateChannel = 0;
@@ -1242,7 +1278,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         }
 
         //OFDMstate->resamplingRatio = (double)OFDMstate->sampleRate / sample->sampleRate;
-        OFDMstate->samplingFrequencyOffsetEstimate = 40/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
+
+        //OFDMstate->samplingFrequencyOffsetEstimate = 0;
         //OFDMstate->resamplingRatio = ((double)OFDMstate->sampleRate / (1 + 25./1000000))/ sample->sampleRate;
         OFDMstate->sampleInterpolatorBuffer.length = 2;
         OFDMstate->sampleInterpolatorBuffer.insertionIndex = 0;
@@ -1438,7 +1475,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
 
             // uncomment to disable the shitty auto gain
-            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation); // enable if the autocorrelation normalization is to be ignored
+            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation / 10); // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1554,39 +1591,62 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
 
                 // do the fft
                 fftw_execute(OFDMstate->fftwPlan);
-                
-                // debug chart for the subchannel IQ plots
-                if(debugPlots.OFDMrawIQEnabled)
+                // correct for channel estimate
+                for(int k = 0; k < OFDMstate->channels; k++)
                 {
-                    // draw a point for every subchannel
-                    double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;   // sizing the individual charts
-                    for(int k = 0; k < OFDMstate->channels; k++)
-                    {
-                        // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
-                        int square = (int)ceil(sqrt(OFDMstate->channels));
-                        double x = ((k % square));
-                        double y = ((k / square));
-
-                        // plot index for coloring preamble samples
-                        int plotIndex = 0;
-                        if(OFDMstate->state.processedSymbols == 0)   // first preamble symbol
-                            plotIndex = 1;
-                        else if(OFDMstate->state.processedSymbols < 5)   // second and third preamble symbols
-                            plotIndex = 2;
-                        
-                        // plot each point
-                        fprintf(debugPlots.OFDMrawIQStdin, "%f %i %f\n", x + creal(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor, plotIndex, y + cimag(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor);
-                    }
+                    OFDMstate->fftwIQbuffer.buffer[k] /= OFDMstate->channelEstimate[k];
                 }
+                
 
                 // then do different things with the data depending on the field
                 switch(OFDMstate->state.field)
                 {
                     case PREAMBLE:
 
+                        // use the symbols of the preamble to estimate sampling frequency offset and do channel estimation
+
+                        // do SFO estimation on the preamble samples by running the FFT on the first half and the second half independently
+                        // this is for symetric symbols (just the first two)
+                        if(OFDMstate->state.symbolIndex < 2)
+                        {
+                            fftw_execute(OFDMstate->fftwRateDetectorFirstHalfPlan);
+                            fftw_execute(OFDMstate->fftwRateDetectorSecondHalfPlan);
+
+                            double samplingFrequencyOffsetEstimate = 0;
+                            double normalizationFactor = 0;
+                            // calculate sampling frequency offset (skip DC and highest frequency in the DFTs)
+                            for(int i = 1; i < OFDMstate->channels / 2 - 1; i++)
+                            {
+                                // estimate sampling frequency offset
+                                // does not take into account the length of a guard interval inbetween
+                                // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
+                                samplingFrequencyOffsetEstimate += 
+                                    carg(OFDMstate->fftwIQrateDetectorFirstHalf.buffer[i] / OFDMstate->fftwIQrateDetectorSecondHalf.buffer[i])
+                                    / (2 * M_PI * i)
+                                    * i;
+                                normalizationFactor += i;
+                            }
+                            samplingFrequencyOffsetEstimate /= normalizationFactor;
+
+                            if(debugPlots.OFDMsfoEstimatorEnabled)
+                            {
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex, 0, OFDMstate->samplingFrequencyOffsetEstimate * pow(10, 6));
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex, 1, samplingFrequencyOffsetEstimate * pow(10,6));
+                            }
+                            // adjust the offset estimate
+                            if(!OFDMstate->disableSFOestimation)
+                                OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate * 0.5;// * 0.7;// *  0.70;
+                            // there is an issue with this correction, since the offset may not take effect before the next OFDM due to buffering
+                        }
+                        // then do SFO estimation again on the on the next two symbol
+                        // two or three steps should be enough to get close, then we'll use pilot symbols to track the phases and correct for residual SFO
+                        // using phase corrections only rather than resampling corrections
+                        // we'll also use the third preamble symbol for channel estimation, so estimation will happen before the fine SFO correction, should be ok?
+
+                        // the next two conditions are for full length repeated symbols
                         // I'm not doing anything with the first preamble symbol right now
                         // for the second, store the decoded IQ values into a buffer
-                        if(OFDMstate->state.symbolIndex % 2 == 1)
+                        else if(OFDMstate->state.symbolIndex % 2 == 0)
                         {
                             for(int i = 0; i < OFDMstate->channels; i++)
                             {
@@ -1595,7 +1655,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                             }
                         }
                         // and on the third, do some calculations to estimate the sampling frequency offset
-                        if(OFDMstate->state.symbolIndex % 2 == 0 && OFDMstate->state.symbolIndex > 0)
+                        else if(OFDMstate->state.symbolIndex % 2 == 1)
                         {
                             double samplingFrequencyOffsetEstimate = 0;
                             double normalizationFactor = 0;
@@ -1604,7 +1664,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                             {
                                 // estimate sampling frequency offset
                                 // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
-                                // result is in ppm of sampling frequency offset
+                                // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
                                 samplingFrequencyOffsetEstimate += carg(OFDMstate->sfoFirstSymbol.buffer[i] / OFDMstate->fftwIQbuffer.buffer[i]) / (2 * M_PI * i * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1)) * i;
                                 normalizationFactor += i;
                             }
@@ -1618,21 +1678,132 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                             }
 
                             // adjust the offset estimate
-                            OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate * 0.90;
+                            samplingFrequencyOffsetEstimate *= 0.8;// weight
+                            if(!OFDMstate->disableSFOestimation)
+                                OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate;
+
+                            // channel estimation
+                            for(int k = 0; k < OFDMstate->channels; k++)
+                            {
+                                // correct symbols for phase offsets due to last estimated offset SFO, correcting for the remaining phase offset
+                                // due to the last correction over the course of one half symbol
+                                //OFDMstate->fftwIQbuffer.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * samplingFrequencyOffsetEstimate);
+                                // measure the channel response on each corrected symbol
+                                OFDMstate->channelEstimate[k] = OFDMstate->fftwIQbuffer.buffer[k];
+                            }
                         }
 
+
                         // check if it's time to exit the preamble
-                        if(OFDMstate->state.symbolIndex == 2*10)
+                        if(OFDMstate->state.symbolIndex == 3)
                         {
                             OFDMstate->state.field = DATA;
-                            OFDMstate->state.symbolIndex = 0;   // reset the symbol index for the data field
+                            OFDMstate->state.symbolIndex = -1;   // reset the symbol index for the data field
                         }
                         break;
 
                     case DATA:
-                        // probably run a discriminator to classify the recieved symbols
-                        // could also put in some pilot symbol processing here
+
+
+
+                        // grab pilot symbols and calculate an estimate for sampling frequency offset
+                        if(OFDMstate->state.symbolIndex == 0)
+                        {
+                            // first pilot symbol
+                            for(int i = 1; i < OFDMstate->pilotSymbolsLength; i++)
+                            {
+                                int k = i * OFDMstate->pilotSymbolsPitch;
+                                OFDMstate->pilotSymbols[i] = OFDMstate->fftwIQbuffer.buffer[k];
+                            }
+                        } else if(OFDMstate->state.symbolIndex > 0)
+                        {
+                            double samplingFrequencyOffsetEstimate = 0;
+                            double normalizationFactor = 0;
+                            // calculate sampling frequency offset (skip DC and highest frequency
+                            for(int i = 1; i < OFDMstate->pilotSymbolsLength; i++)
+                            {
+                                // calculate channel index from pilot index
+                                int k = i * OFDMstate->pilotSymbolsPitch;
+
+                                // calculated phase adjustment for pilot symbols by currently known SFO residual
+                                // these phasors are always degenerate, since the residual is always 0 now
+                                //complex double phasor1 = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex - 1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
+                                //complex double phasor2 = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
+
+                                // estimate sampling frequency offset
+                                // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
+                                // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
+                                samplingFrequencyOffsetEstimate += 
+                                    //carg(OFDMstate->pilotSymbols[i] * phasor1 / (OFDMstate->fftwIQbuffer.buffer[k] * phasor2)) 
+                                    carg(OFDMstate->pilotSymbols[i] / (OFDMstate->fftwIQbuffer.buffer[k])) 
+                                    / (2 * M_PI * k * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1))
+                                    * k;
+                                // move pilot value to the old buffer
+                                OFDMstate->pilotSymbols[i] = OFDMstate->fftwIQbuffer.buffer[k];
+                                normalizationFactor += k;
+                            }
+                            samplingFrequencyOffsetEstimate /= normalizationFactor;
+
+                            if(debugPlots.OFDMsfoEstimatorEnabled)
+                            {
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 3, OFDMstate->samplingFrequencyOffsetResidual * pow(10, 6));
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 4, samplingFrequencyOffsetEstimate * pow(10,6));
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 5, (OFDMstate->samplingFrequencyOffsetResidual + OFDMstate->samplingFrequencyOffsetEstimate) * pow(10, 6));
+                            }
+
+                            // decaying weight, with a minimum floor
+                            double weight = 0.5 * exp(-0.07 * OFDMstate->state.symbolIndex);
+                            weight = weight < 0.03 ? 0.03 : weight;
+                            // adjust the offset estimate
+                            if(!OFDMstate->disableSFOestimation)
+                            {
+                                // store the offset into the residual for phase corrections since initial channel estimation
+                                OFDMstate->samplingFrequencyOffsetResidual += samplingFrequencyOffsetEstimate * weight;// *  0.70;
+                                // correct the resampler rate for future symbols
+                                OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate * weight;// *  0.70;
+                            }
+
+                        }
+
+                        // correct for residual phase offsets since initial channel estimation
+                        for(int k = 0; k < OFDMstate->channels; k++)
+                        {
+                            // correct symbols for phase offsets due to residual SFO, over the course of 1 symbol.
+                            OFDMstate->fftwIQbuffer.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
+                            //complex double value = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
+                            //printf("phase adjustment: %lf + %lf i\n", creal(value), cimag(value));
+                            // correct for channel estimation
+                        }
+                        // run a discriminator to classify the recieved symbols
+
                         break;
+                }
+
+                // debug chart for the subchannel IQ plots
+                if(debugPlots.OFDMrawIQEnabled)
+                {
+                    // draw a point for every subchannel
+                    //double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;   // sizing the individual charts
+                    double normalizationFactor = 4;
+                    for(int k = 0; k < OFDMstate->channels; k++)
+                    {
+                        // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
+                        int square = (int)ceil(sqrt(OFDMstate->channels));
+                        double x = ((k % square));
+                        double y = ((k / square));
+
+                        // plot index for coloring preamble samples
+                        int plotIndex = 0;
+                        if(OFDMstate->state.processedSymbols == 0)   // first preamble symbol
+                            plotIndex = 1;
+                        else if(OFDMstate->state.processedSymbols < 4)   // second and third preamble symbols
+                            plotIndex = 2;
+                        else if(OFDMstate->state.processedSymbols < 50) // draw early symbols with different color
+                            plotIndex = 3;
+                        
+                        // plot each point
+                        fprintf(debugPlots.OFDMrawIQStdin, "%f %i %f\n", x + creal(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor, plotIndex, y + cimag(OFDMstate->fftwIQbuffer.buffer[k]) / normalizationFactor);
+                    }
                 }
 
                 // mark that this symbol was extracted and processed, increment the symbol index
@@ -1693,7 +1864,7 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    debugPlots.OFDMtimingSyncEnabled = 1;
+    //debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMrawIQEnabled = 1;
     debugPlots.OFDMsfoEstimatorEnabled = 1;
@@ -2068,6 +2239,7 @@ int main(void)
         "--legend 0 \"Data samples\" "
         "--legend 1 \"Preamble 1 samples: autocorrelation\" "
         "--legend 2 \"Preamble 2,3 samples: sample rate estimator\" "
+        "--legend 3 \"pre lockin Data samples\" "
 
     ;
     if(debugPlots.OFDMrawIQEnabled)
@@ -2105,8 +2277,12 @@ int main(void)
         "--domain --dataid --lines --points "
         "--title \"OFDM sampling frequency offset estimator\" "
         "--xlabel \"OFDM preamble symbol number\" --ylabel \"estimated frequency error (Hz ppm)\" "
-        "--legend 0 \"Total Estimated Offset\" "
-        "--legend 1 \"Current Estimated Offset\" "
+        "--legend 0 \"Estimated Offset (used for resampler)\" "
+        "--legend 1 \"Detected Estimated Offset\" "
+        "--legend 2 \"SFO Estimation actually used for the given samples\" "
+        "--legend 3 \"residual Offset (used for phase correction only)\" "
+        "--legend 4 \"Detected residual Offset\" "
+        "--legend 5 \"Total SFO correction (resampler and phase residual phase correction combined)\" "
     ;
     if(debugPlots.OFDMsfoEstimatorEnabled)
     {
@@ -2130,7 +2306,7 @@ int main(void)
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 20; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 120; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer
