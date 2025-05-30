@@ -148,7 +148,7 @@ typedef struct
     double complex *points;   // a pointer to an array of points in the constellation
     int length;               // the number of points in the constellation
 
-    huffman_tree_t* huffmanTree;
+    huffman_tree_t* huffmanTree;    // a binary tree used for encoding a bit stream into constellation points
 
 } constellation_complex_t;
 
@@ -228,6 +228,83 @@ typedef struct
 } OFDM_state_t;
 
 
+void generateHuffmanTree(constellation_complex_t *constellation)
+{
+    // generate a huffman tree based on the number of points in the given constellation object
+    // and add a pointer to the tree in the constellation object
+    // assuming all points must be as equaprobable as possible (won't be possible except powers of 2 number of points)
+
+
+    // linked list
+    typedef struct listElem
+    {
+        struct listElem *next;
+        huffman_tree_t *huffmanTree;
+    } listElem;
+
+    // VLA
+    listElem roots[constellation->length];
+    huffman_tree_t *huffmanList = malloc(sizeof(huffman_tree_t) * constellation->length);
+    for(int i = 0; i < constellation->length; i++)
+    {
+        // if it's not the last in the list, reference the next in the linked list
+        if(i != constellation->length - 1)
+            roots[i].next = &roots[i+1];
+        else
+            roots[i].next = 0;
+
+        roots[i].huffmanTree = &huffmanList[i];
+        roots[i].huffmanTree->isLeaf = 1;
+        roots[i].huffmanTree->constellationIndex = i;
+        // clear the children pointers
+        roots[i].huffmanTree->child_0 = 0;
+        roots[i].huffmanTree->child_1 = 0;
+    }
+
+    int rootsNumber = constellation->length;
+    listElem *root = &roots[0];
+    listElem *tail = &roots[constellation->length - 1];
+    while(rootsNumber > 1)
+    {
+        // each loop, combine the huffman nodes from the top two items of the list under a new huffman node
+        // then add the new huffman node to the end of the linked list.
+
+        listElem *oldRoot = root;   // first item
+        listElem *newRoot = root->next->next;// third item down the list
+
+        // the two huffman nodes of interest
+        huffman_tree_t *huffman1 = oldRoot->huffmanTree;
+        huffman_tree_t *huffman2 = oldRoot->next->huffmanTree;
+
+        // we'll reuse the oldRoot linked list element for the new huffman node
+        oldRoot->huffmanTree = malloc(sizeof(huffman_tree_t));  // create a new huffman node, adding the two found nodes as children
+        oldRoot->huffmanTree->isLeaf = 0;
+        oldRoot->huffmanTree->child_0 = huffman1;
+        oldRoot->huffmanTree->child_1 = huffman2;
+
+        // clear the constellation index field
+        oldRoot->huffmanTree->constellationIndex = -1;
+
+        // add the oldRoot to the end of the linked list
+        tail->next = oldRoot;
+        tail = oldRoot;
+        tail->next = 0;
+        // we'll use the new root to hold the newly created huffman tree node
+
+        // see if this is the last run
+        if(rootsNumber > 2)
+            root = newRoot; // set the new root
+        else
+            root = oldRoot; // last root is the list item containing the newly created huffman node
+
+        // clear out the data for the unused linked list item
+        // we loose one list item each loop
+        rootsNumber--;  // subtract one from the length of the linked list
+    }
+
+    // at the end of the loop, we should have a huffman tree constructed and pointed to by the root liste item
+    constellation->huffmanTree = root->huffmanTree;
+}
 
 // some functions to generate IQ streams with different properties
 iqsample_t impulse(int symbolIndex, int impulseTime)
@@ -1733,7 +1810,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->fftwPlan = fftw_plan_dft_c2r_1d(OFDMstate->ofdmPeriod, OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->OFDMsymbol.timeDomain, FFTW_MEASURE);
 
 
-        // initialize constellations
+        // initialize constellations and their huffman trees
         OFDMstate->constellationsLength = 16;
         OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
         for(int i = 0; i < OFDMstate->constellationsLength; i++)
@@ -1742,22 +1819,25 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             if(i==0)    // first constellation is used for the preamble
             {
                 fftw_ASK(2, &OFDMstate->constellations[i]);
-                continue;
+            } else {
+
+                // for data channels
+                fftw_squareQAM(i, &OFDMstate->constellations[i]);
+                /*
+                if(i / 16 == 0)
+                    fftw_hexQAM(i / 16, &OFDMstate->constellations[i % 16]);
+                else if(i / 16 == 1)
+                    fftw_squareQAM(i / 16, &OFDMstate->constellations[i % 16]);
+                else if(i / 16 == 1)
+                    fftw_PSK(i / 16, &OFDMstate->constellations[i % 16]);
+                else if(i / 16 == 1)
+                    fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
+                    */
             }
 
-            // for data channels
-            fftw_squareQAM(i, &OFDMstate->constellations[i]);
+            // generate the huffman tree for the number of points in the constellation
+            generateHuffmanTree(&OFDMstate->constellations[i]);
 
-            /*
-            if(i / 16 == 0)
-                fftw_hexQAM(i / 16, &OFDMstate->constellations[i % 16]);
-            else if(i / 16 == 1)
-                fftw_squareQAM(i / 16, &OFDMstate->constellations[i % 16]);
-            else if(i / 16 == 1)
-                fftw_PSK(i / 16, &OFDMstate->constellations[i % 16]);
-            else if(i / 16 == 1)
-                fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
-                */
         }
 
         // initialize pilot symbols
