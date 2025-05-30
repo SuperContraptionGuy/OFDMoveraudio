@@ -1693,7 +1693,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
         OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband) ie niquist
-        OFDMstate->pilotSymbolsPitch = 100;
+        OFDMstate->pilotSymbolsPitch = 25;
         
         // initialize channel simulation filter
         OFDMstate->simulateNoise = 0;
@@ -1792,7 +1792,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             }
 
             // check for exit from IDLE frame
-            if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod * 1 - 1) // example of state change based on timing
+            if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod * 3 - 1) // example of state change based on timing
             {
                 OFDMstate->state.frame = ACTIVE;
                 OFDMstate->state.frameStart = n + 1;    // starts next index

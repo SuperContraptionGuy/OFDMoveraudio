@@ -770,7 +770,7 @@ buffered_data_return_t averagingFilter(const circular_buffer_double_t *inputSamp
 }
 
 // detect the most likely/optimal for the channel conditions ofdm frame start time
-buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t *inputSamples, sample_double_t *outputSample, debugPlots_t debugPlots)
+buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t *inputSamples, sample_double_t *outputSample, OFDM_properties_t *OFDMstate, debugPlots_t debugPlots)
 {
     // width of input window should be some 4 times larger than guard interval
     sample_double_t minimumFirstHalf = {0};
@@ -787,6 +787,17 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
     maximum.sample = inputSamples->buffer[(inputSamples->insertionIndex + 1 + inputSamples->length / 2) % inputSamples->length];    // equals value right in the middle
     maximum.sampleIndex = inputSamples->n - inputSamples->length + inputSamples->length / 2;
     maximum.sampleRate = inputSamples->sampleRate;
+
+    sample_double_t thresholdFirstHalf = {0};
+    thresholdFirstHalf.sample = inputSamples->buffer[(inputSamples->insertionIndex + 1) % inputSamples->length];    // equals value of first sample
+    thresholdFirstHalf.sampleIndex = inputSamples->n - inputSamples->length + 1;
+    thresholdFirstHalf.sampleRate = inputSamples->sampleRate;
+
+    sample_double_t thresholdSecondHalf = {0};
+    thresholdSecondHalf.sample = inputSamples->buffer[inputSamples->insertionIndex];    // equals value of last sample
+    thresholdSecondHalf.sampleIndex = inputSamples->n;
+    thresholdSecondHalf.sampleRate = inputSamples->sampleRate;
+
     /*
     // width of input window should be some 4 times larger than guard interval
     sample_double_t minimumFirstHalf = {0};
@@ -813,8 +824,10 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
     // if first and second half minimums are below some threshold
     // if maximum overall is above some threshold
     // if the maximum occurs between the minima
-    double lowerThreshold = 0.2;
-    double upperThreshold = 0.25;
+    //double lowerThreshold = 0.2;
+    //double upperThreshold = 0.25;
+    double lowerThreshold = 0.1;
+    double upperThreshold = lowerThreshold * 1.25;
     
     // only run the convolution if it's likely to be close, because it's really slow
     if(minimumFirstHalf.sample < lowerThreshold && minimumSecondHalf.sample < lowerThreshold && maximum.sample > upperThreshold)
@@ -842,6 +855,32 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
                 minimumSecondHalf.sample = value;
                 minimumSecondHalf.sampleIndex = index;
             }
+
+
+        }
+
+        double threshold = lowerThreshold;
+        //double threshold = maximum.sample * 0.1;
+        //threshold = threshold < lowerThreshold ? lowerThreshold : threshold;
+        for(int i = 0; i < inputSamples->length; i++)
+        {
+            double value = inputSamples->buffer[(inputSamples->insertionIndex + 1 + i) % inputSamples->length];
+            double index = inputSamples->n - inputSamples->length + 1 + i;
+            // get closest to the threshold in the first half
+            //double threshold = (lowerThreshold + upperThreshold) / 2;
+            if(index < maximum.sampleIndex && fabs(value - threshold) < fabs(thresholdFirstHalf.sample - threshold))
+            {
+                // determine minimum of first half of samples
+                thresholdFirstHalf.sample = value;
+                thresholdFirstHalf.sampleIndex = index;
+            }
+            // get the closest to the threshold in the second half
+            if(index >= maximum.sampleIndex && fabs(value - threshold) < fabs(thresholdSecondHalf.sample - threshold))
+            {
+                // minimum of last half of samples
+                thresholdSecondHalf.sample = value;
+                thresholdSecondHalf.sampleIndex = index;
+            }
         }
         
         outputSample->sample = 0;
@@ -851,7 +890,22 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
         {
             // the offset is the index value of the maximum
             outputSample->sample = 1;
-            outputSample->sampleIndex = maximum.sampleIndex;    // index is the offset of maximum
+            //outputSample->sampleIndex = maximum.sampleIndex;    // index is the offset of maximum
+            int centerOfPlateu = (thresholdFirstHalf.sampleIndex + thresholdSecondHalf.sampleIndex) / 2;    // head a bit ahead of the center of the plateu, near the end of it ideally
+            outputSample->sampleIndex = centerOfPlateu + OFDMstate->guardPeriod / 2 * 3 / 4;    // head a bit ahead of the center of the plateu, near the end of it ideally
+            //outputSample->sampleIndex = centerOfPlateu;    // head a bit ahead of the center of the plateu, near the end of it ideally
+            // graph the correlation function
+            if(debugPlots.OFDMtimingSyncEnabled)
+            {
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", thresholdFirstHalf.sampleIndex, 7, threshold);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", centerOfPlateu - OFDMstate->guardPeriod / 2, 7, maximum.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", centerOfPlateu, 7, maximum.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", centerOfPlateu + OFDMstate->guardPeriod / 2, 7, maximum.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", thresholdSecondHalf.sampleIndex, 7, threshold);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", outputSample->sampleIndex, 6, threshold);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", outputSample->sampleIndex, 6, maximum.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", outputSample->sampleIndex, 6, 1.);
+            }
             return RETURNED_SAMPLE; // only return a sample when preamble is detected
         }
     }
@@ -1228,7 +1282,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
         //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
         OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
         OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
-        OFDMstate->pilotSymbolsPitch = 100;
+        OFDMstate->pilotSymbolsPitch = 25;
 
         // initialize buffer to hold input samples for further processing
         //OFDMstate->preambleDetectorInputBuffer.length = OFDMstate->ofdmPeriod + 1;
@@ -1248,8 +1302,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             OFDMstate->samplingFrequencyOffsetEstimate = 0;
             OFDMstate->samplingFrequencyOffsetResidual = 0;
         } else {
-            //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
-            OFDMstate->samplingFrequencyOffsetEstimate = 0;
+            OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
+            //OFDMstate->samplingFrequencyOffsetEstimate = 0;
             OFDMstate->samplingFrequencyOffsetResidual = 0;
         }
         OFDMstate->pilotSymbolsLength = OFDMstate->channels / OFDMstate->pilotSymbolsPitch;
@@ -1491,16 +1545,17 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             sample_double_t timingSignal = {0};
             //timingSignal.sample = 1;
             //buffered_data_return_t returnValue = AWAITING_SAMPLES;
-            buffered_data_return_t returnValue = timingPeakDetectionFilter(&OFDMstate->timingFilterInputBuffer, &timingSignal, debugPlots);
+            buffered_data_return_t returnValue = timingPeakDetectionFilter(&OFDMstate->timingFilterInputBuffer, &timingSignal, OFDMstate, debugPlots);
 
             OFDMstate->timingFilterInputBuffer.insertionIndex = (OFDMstate->timingFilterInputBuffer.insertionIndex + 1) % OFDMstate->timingFilterInputBuffer.length;
 
             // graph the correlation function
-            if(debugPlots.OFDMtimingSyncEnabled)
+            //if(debugPlots.OFDMtimingSyncEnabled)
+            if(debugPlots.OFDMtimingSyncEnabled && retimedSample.sampleIndex % 500 == 0)
             {
-                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 0, OFDMstate->autoCorrelation.sample);
+                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 0, OFDMstate->autoCorrelation.sample);
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", retimedSample.sampleIndex, 1, retimedSample.sample);
-                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", sample->sampleIndex, 2, sample->sample);
+                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", sample->sampleIndex, 2, sample->sample);
 
 
                 //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelationDerivative.sampleIndex, 3, OFDMstate->autoCorrelationDerivative.sample + 1);
@@ -1518,14 +1573,6 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
             // preambe triggered
             if(returnValue == RETURNED_SAMPLE)
             {
-
-                // plot timing mark
-                if(debugPlots.OFDMtimingSyncEnabled)
-                {
-                    //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %i\n", timingSignal.sampleIndex, 6, 0);
-                    fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %i\n", timingSignal.sampleIndex, 6, 1);
-                    //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %i\n", timingSignal.sampleIndex, 6, 0);
-                }
 
                 // save the timing offset
                 OFDMstate->ofdmPhaseOffset = timingSignal.sampleIndex;
@@ -1721,9 +1768,17 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                             double normalizationFactor = 0;
                             // calculate sampling frequency offset (skip DC and highest frequency
                             for(int i = 1; i < OFDMstate->pilotSymbolsLength; i++)
+                            //for(int i = OFDMstate->pilotSymbolsLength / 5; i < OFDMstate->pilotSymbolsLength * 3 / 5; i++)
                             {
                                 // calculate channel index from pilot index
                                 int k = i * OFDMstate->pilotSymbolsPitch;
+
+                                // testing the idea of excluding noisy pilot channels
+                                // according to the amplitude of it's channel estimation
+                                if(cabs(OFDMstate->channelEstimate[k]) < 1.5)
+                                    //printf("too low: %i\t\t%i\n", k, i);
+                                    continue;
+                                //printf("used: %i\t\t%i\n", k, i);
 
                                 // calculated phase adjustment for pilot symbols by currently known SFO residual
                                 // these phasors are always degenerate, since the residual is always 0 now
@@ -1741,6 +1796,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                                 // move pilot value to the old buffer
                                 OFDMstate->pilotSymbols[i] = OFDMstate->fftwIQbuffer.buffer[k];
                                 normalizationFactor += k;
+                                //normalizationFactor += 1;
                             }
                             samplingFrequencyOffsetEstimate /= normalizationFactor;
 
@@ -1798,7 +1854,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_prope
                             plotIndex = 1;
                         else if(OFDMstate->state.processedSymbols < 4)   // second and third preamble symbols
                             plotIndex = 2;
-                        else if(OFDMstate->state.processedSymbols < 50) // draw early symbols with different color
+                        else if(OFDMstate->state.symbolIndex < 20) // draw early symbols with different color
                             plotIndex = 3;
                         
                         // plot each point
@@ -1864,7 +1920,7 @@ int main(void)
     //debugPlots.eyeDiagramRealEnabled = 1;
     //debugPlots.eyeDiagramImaginaryEnabled = 1;
     //debugPlots.channelFilterEnabled = 1;
-    //debugPlots.OFDMtimingSyncEnabled = 1;
+    debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
     debugPlots.OFDMrawIQEnabled = 1;
     debugPlots.OFDMsfoEstimatorEnabled = 1;
@@ -2194,7 +2250,8 @@ int main(void)
         "--legend 4 \"preamble auto correlation average\" "
         "--legend 5 \"preamble auto correlation derivative average\" "
         "--legend 6 \"OFDM Transmission found, at given offset\" "
-        "--legend 7 \"d+l * d+2l\" "
+        "--legend 7 \"Plateu Estimation Points\" "
+        //"--legend 7 \"d+l * d+2l\" "
         "--legend 8 \"d * d+l\" "
         "--legend 9 \"convolution auto correlation\" "
         "--legend 10 \"convolution second half energy\" "
