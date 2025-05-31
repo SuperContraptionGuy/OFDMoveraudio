@@ -136,8 +136,7 @@ typedef struct huffman_tree_t
 {
     char isLeaf;    // is it a leaf with an IQ value, or does it have children
 
-    struct huffman_tree_t* child_0;
-    struct huffman_tree_t* child_1;
+    struct huffman_tree_t *child[2];    // the two children
 
     int constellationIndex;   // the index of the constellation point 
 
@@ -257,8 +256,8 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         roots[i].huffmanTree->isLeaf = 1;
         roots[i].huffmanTree->constellationIndex = i;
         // clear the children pointers
-        roots[i].huffmanTree->child_0 = 0;
-        roots[i].huffmanTree->child_1 = 0;
+        roots[i].huffmanTree->child[0] = 0;
+        roots[i].huffmanTree->child[1] = 0;
     }
 
     int rootsNumber = constellation->length;
@@ -279,8 +278,8 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         // we'll reuse the oldRoot linked list element for the new huffman node
         oldRoot->huffmanTree = malloc(sizeof(huffman_tree_t));  // create a new huffman node, adding the two found nodes as children
         oldRoot->huffmanTree->isLeaf = 0;
-        oldRoot->huffmanTree->child_0 = huffman1;
-        oldRoot->huffmanTree->child_1 = huffman2;
+        oldRoot->huffmanTree->child[0] = huffman1;
+        oldRoot->huffmanTree->child[1] = huffman2;
 
         // clear the constellation index field
         oldRoot->huffmanTree->constellationIndex = -1;
