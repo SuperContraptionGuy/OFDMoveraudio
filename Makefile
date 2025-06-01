@@ -2,9 +2,9 @@ BUILD_DIR := build
 
 CC := gcc
 
-SRCS := qam.c qamDecoder.c
+SRCS := utilities.c qam.c qamDecoder.c
 OBJS := $(addprefix $(BUILD_DIR)/,$(SRCS:.c=.o))
-DEPS := $(OBJS:.o:.d)
+DEPS := $(OBJS:.o:.d),utilities.h
 
 DEPFLAGS = -MT "$@" -MMD -MP -MF "$(BUILD_DIR)/$*.d"
 
@@ -41,7 +41,9 @@ LDFLAGS := \
 .PHONY: all qam qamDecoder clean
 all: qam qamDecoder
 
-qam: $(BUILD_DIR)/qam
+utilities: $(BUILD_DIR)/utilities.o
+
+qam: utilities $(BUILD_DIR)/qam
 
 qamDecoder: $(BUILD_DIR)/qamDecoder
 
