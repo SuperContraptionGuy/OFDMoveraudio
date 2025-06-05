@@ -6,11 +6,105 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 #include <complex.h>
 #include <fftw3.h>
 
 #include "utilities.h"
+
+
+void initializeOFDMstate(OFDM_state_t *OFDMstate)
+{
+    // initialize the state
+
+    OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
+                                       //OFDMstate->guardPeriod = 128;
+    OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
+                                                          //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
+    OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
+    OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
+    OFDMstate->pilotSymbolsPitch = 25;
+    
+    // initialize fftw arrays for both recieve and transmit
+    initializeCircularBuffer_fftw_complex(&OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->channels, 0);
+    initializeCircularBuffer_double(&OFDMstate->OFDMsymbol.timeDomain, OFDMstate->ofdmPeriod, 0);
+
+    // initialize constellations and their huffman trees
+    OFDMstate->constellationsLength = 16;
+    OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
+    if(OFDMstate->constellations == NULL)
+        fprintf(stderr, "constellations failed to allocate: %s\n", strerror(errno));
+    for(int i = 0; i < OFDMstate->constellationsLength; i++)
+    {
+        //fftw_squareQAM(i, &OFDMstate->constellations[i]);
+        if(i==0)    // first constellation is used for the preamble
+        {
+            fftw_ASK(2, &OFDMstate->constellations[i]);
+        } else {
+
+            // for data channels
+            fftw_squareQAM(i, &OFDMstate->constellations[i]);
+            /*
+               if(i / 16 == 0)
+               fftw_hexQAM(i / 16, &OFDMstate->constellations[i % 16]);
+               else if(i / 16 == 1)
+               fftw_squareQAM(i / 16, &OFDMstate->constellations[i % 16]);
+               else if(i / 16 == 1)
+               fftw_PSK(i / 16, &OFDMstate->constellations[i % 16]);
+               else if(i / 16 == 1)
+               fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
+               */
+        }
+
+        // generate the huffman tree for the number of points in the constellation
+        generateHuffmanTree(&OFDMstate->constellations[i]);
+
+    }
+
+    // initialize random number generators
+    srand(1);
+    srand48_r(rand(), &OFDMstate->preamblePilotsPRNG);
+    srand48_r(rand(), &OFDMstate->pilotsPRNG);
+    srand48_r(rand(), &OFDMstate->predefinedDataPRNG);
+    srand48_r(rand(), &OFDMstate->channelNoisePRNG);
+
+}
+
+void initializeCircularBuffer_fftw_complex(circular_buffer_complex_t *buf, int length, int sampleRate)
+{
+    buf->length = length;
+    buf->insertionIndex = 0;
+    buf->phase = 0;
+    buf->n = 0;
+    buf->sampleRate = sampleRate;
+    buf->buffer = fftw_malloc(sizeof(fftw_complex) * buf->length);
+    if(buf->buffer == NULL)
+        fprintf(stderr, "failed to allocate a complex circlular buffer. %s\n", strerror(errno));
+}
+void initializeCircularBuffer_complex(circular_buffer_complex_t *buf, int length, int sampleRate)
+{
+    initializeCircularBuffer_fftw_complex(buf, length, sampleRate);
+}
+
+void initializeCircularBuffer_double(circular_buffer_double_t *buf, int length, int sampleRate)
+{
+    buf->length = length;
+    buf->insertionIndex = 0;
+    buf->buffer = fftw_malloc(sizeof(double) * buf->length);
+    if(buf->buffer == NULL)
+        fprintf(stderr, "failed to allocate a double circlular buffer. %s\n", strerror(errno));
+}
+
+void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t *buf, int length)
+{
+    buf->length = length;
+    buf->insertionIndex = 0;
+    buf->buffer = calloc(buf->length, sizeof(double));
+    if(buf->buffer == NULL)
+        fprintf(stderr, "cahnnelSimulationBuffer failed to allocate: %s\n", strerror(errno));
+}
+
 
 
 void generateHuffmanTree(constellation_complex_t *constellation)

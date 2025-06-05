@@ -366,25 +366,15 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 {
     if(OFDMstate->initialized == 0)
     {
+        initializeOFDMstate(OFDMstate);
+
         // initialize the state variables
         OFDMstate->state.frame = IDLE;
         OFDMstate->state.frameStart = n;
-
-        //OFDMstate->sampleRate = 44100;
-        //OFDMstate->guardPeriod = 0.13 * OFDMstate->sampleRate;  // measured impulse response of room lasts like a bit over a tenth of a second would be nice to have this adjusted on the fly
-        OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
-        //OFDMstate->guardPeriod = 128;   // faster testing
-        //OFDMstate->guardPeriod = 0.001 * OFDMstate->sampleRate;  // measured impulse response of room lasts like a bit over a tenth of a second would be nice to have this adjusted on the fly
-        OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
-        //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
-        OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
-        OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband) ie niquist
-        OFDMstate->pilotSymbolsPitch = 25;
         
         // initialize channel simulation filter
         OFDMstate->simulateNoise = 0;
         OFDMstate->simulateChannel = 0;
-
 
         OFDMstate->dataInput = fopen("inputData", "r");
         OFDMstate->bitOffset = 0;
@@ -399,67 +389,24 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             OFDMstate->channelSimulationBuffer.length = OFDMstate->channelSimulationBuffer.L;
             OFDMstate->channelSimulationBuffer.N = OFDMstate->channelSimulationBuffer.L + OFDMstate->channelSimulationBuffer.M;
             OFDMstate->channelSimulationBuffer.insertionIndex = 0;
-            //OFDMstate->channelSimulationBuffer.buffer = calloc(OFDMstate->channelSimulationBuffer.length, sizeof(double));
+
             OFDMstate->channelSimulationBuffer.M_buffer = fftw_malloc(sizeof(double) * OFDMstate->channelSimulationBuffer.N);    // use fftw malloc since fftw will use this buffer
             if(OFDMstate->channelSimulationBuffer.M_buffer == NULL)
                 fprintf(stderr, "cahnnelSimulationBuffer failed to allocate: %s\n", strerror(errno));
+
             OFDMstate->channelSimulationBuffer.L_buffer = OFDMstate->channelSimulationBuffer.M_buffer + OFDMstate->channelSimulationBuffer.M;   // offset the L
             OFDMstate->channelSimulationBuffer.buffer = OFDMstate->channelSimulationBuffer.L_buffer;
             OFDMstate->channelSimulationBuffer.M_next_buffer = OFDMstate->channelSimulationBuffer.M_buffer + OFDMstate->channelSimulationBuffer.L;  // M_next_buffer is the last M numbers of L
         }
 
-        // initialize fftw arrays
-        OFDMstate->OFDMsymbol.frequencyDomain = (fftw_complex*)malloc(sizeof(fftw_complex) * OFDMstate->channels);
-        if(OFDMstate->OFDMsymbol.frequencyDomain == NULL)
-            fprintf(stderr, "couldn't allocate fftw input array\n");
-
-        OFDMstate->OFDMsymbol.timeDomain = (double*)malloc(sizeof(double) * OFDMstate->ofdmPeriod);
-        if(OFDMstate->OFDMsymbol.timeDomain == NULL)
-            fprintf(stderr, "couldn't allocate fftw output array\n");
 
         // initialize fftw plan, using the measure option to calculate the fastest plan, could have a few seconds startup time
-        OFDMstate->fftwPlan = fftw_plan_dft_c2r_1d(OFDMstate->ofdmPeriod, OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->OFDMsymbol.timeDomain, FFTW_MEASURE);
+        OFDMstate->fftwPlan = fftw_plan_dft_c2r_1d(
+                OFDMstate->OFDMsymbol.timeDomain.length,
+                OFDMstate->OFDMsymbol.frequencyDomain.buffer,
+                OFDMstate->OFDMsymbol.timeDomain.buffer,
+                FFTW_MEASURE);
 
-
-        // initialize constellations and their huffman trees
-        OFDMstate->constellationsLength = 16;
-        OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
-        for(int i = 0; i < OFDMstate->constellationsLength; i++)
-        {
-            //fftw_squareQAM(i, &OFDMstate->constellations[i]);
-            if(i==0)    // first constellation is used for the preamble
-            {
-                fftw_ASK(2, &OFDMstate->constellations[i]);
-            } else {
-
-                // for data channels
-                fftw_squareQAM(i, &OFDMstate->constellations[i]);
-                /*
-                if(i / 16 == 0)
-                    fftw_hexQAM(i / 16, &OFDMstate->constellations[i % 16]);
-                else if(i / 16 == 1)
-                    fftw_squareQAM(i / 16, &OFDMstate->constellations[i % 16]);
-                else if(i / 16 == 1)
-                    fftw_PSK(i / 16, &OFDMstate->constellations[i % 16]);
-                else if(i / 16 == 1)
-                    fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
-                    */
-            }
-
-            // generate the huffman tree for the number of points in the constellation
-            generateHuffmanTree(&OFDMstate->constellations[i]);
-
-        }
-
-        // initialize pilot symbols
-        int pilotSymbolsLength = OFDMstate->channels / OFDMstate->pilotSymbolsPitch;
-        OFDMstate->pilotSymbols = malloc(sizeof(complex double) * pilotSymbolsLength);
-        constellation_complex_t constellation = OFDMstate->constellations[0];   // use the first constellation
-        for(int i = 0; i < pilotSymbolsLength; i++)
-        {
-            OFDMstate->pilotSymbols[i] = constellation.points[rand() % constellation.length];
-            traverseHuffmanTree(OFDMstate, &constellation);
-        }
 
         OFDMstate->initialized = 1;
     }
@@ -480,7 +427,10 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             if(0)
             {
                 double noiseAmplitude = 0.1 * OFDMstate->ofdmPeriod;  // there is a normalization factor
-                output += (double)rand() / ((double)RAND_MAX / (noiseAmplitude)) - (noiseAmplitude / 2);
+                //output += (double)rand() / ((double)RAND_MAX / (noiseAmplitude)) - (noiseAmplitude / 2);
+                double value;
+                drand48_r(&OFDMstate->channelNoisePRNG, &value);
+                output += value * noiseAmplitude - noiseAmplitude / 2;
             }
 
             // check for exit from IDLE frame
@@ -512,6 +462,10 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 // generate a symetric symbol, with even frequency components only for syncronization
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
+                                    // generate a random integer for constellation choices
+                                    long int randomInteger;
+                                    lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
+
                                     if(OFDMstate->state.symbolIndex < 2)    // generate symetric symbols for the first two symbols
                                     {
                                         if(k % 2 == 0)    // every other for repetative symbol
@@ -528,10 +482,10 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                            //     I*(rand() % 2 * 2 - 1);
                                                 //I;    // testing
                                             constellation_complex_t constellation = OFDMstate->constellations[0];
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] = constellation.points[rand() % constellation.length];
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomInteger % constellation.length];
                                         } else {
                                             //OFDMstate->currentOFDMSymbol[k] = 0;
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = 0;
                                         }
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 200 / 30;
 
@@ -548,9 +502,9 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                             //    I*(rand() % 2 * 2 - 1);
                                                 //0;
                                             constellation_complex_t constellation = OFDMstate->constellations[0];
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] = constellation.points[rand() % constellation.length];
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomInteger % constellation.length];
                                         } else {
-                                            OFDMstate->OFDMsymbol.frequencyDomain[k] =
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] =
                                                 0;
                                         }
                                         //OFDMstate->currentOFDMSymbol[k] = 0;    // testing
@@ -566,7 +520,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             // output samples for the guard period
                             //output = OFDMsymbolBaseband(OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart),
                                                         //OFDMstate);
-                            output = OFDMstate->OFDMsymbol.timeDomain[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
+                            output = OFDMstate->OFDMsymbol.timeDomain.buffer[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
 
                             if(OFDMstate->state.symbolIndex < 2)
                             {
@@ -586,7 +540,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
                             //output = OFDMsymbolBaseband(n - OFDMstate->state.symbolStart,
                                                         //OFDMstate);
-                            output = OFDMstate->OFDMsymbol.timeDomain[n - OFDMstate->state.symbolStart];
+                            output = OFDMstate->OFDMsymbol.timeDomain.buffer[n - OFDMstate->state.symbolStart];
 
                             if(OFDMstate->state.symbolIndex < 2)
                                 output *= M_SQRT2;
@@ -626,6 +580,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 // it can be modulated with any IQ method. QPSK is one idea, but you could choose any IQ constellation to encode data. it could also be
                                 // a different constellation for each sub channel, useful for taking advantage of low noise subchannels without increasing
                                 // error rates on noisy channels
+                                /*
                                 static int center;
                                 static int width;
                                 if(rand() % 5 == 0 || OFDMstate->state.symbolIndex == 0)
@@ -633,8 +588,15 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     center = rand() % OFDMstate->channels;
                                     width = rand() % OFDMstate->channels;
                                 }
+                                */
                                 for(int k = 0; k < OFDMstate->channels; k++)
                                 {
+                                    // generate a random index
+                                    long int randomIntegerPilot;
+                                    long int randomIntegerData;
+                                    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerPilot);
+                                    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+
                                     //if(1)   // transmit on all subchannels
                                     //if(k > 250 && k < 6000)
                                     //if(k > 250 && k < 350)
@@ -646,13 +608,14 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     if(k % OFDMstate->pilotSymbolsPitch == 0) // transmit pilot symbols on pilot channels
                                     {
                                         // pilot symbols
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = OFDMstate->pilotSymbols[k / OFDMstate->pilotSymbolsPitch];
+                                        constellation_complex_t constellation = OFDMstate->constellations[0];
+                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerPilot % constellation.length];
 
                                     } else {    // and use the rest for data channels
                                         
                                         // picking a sequential constellation, and a random point in that constellation discluding the first entry
                                         constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
-                                        OFDMstate->OFDMsymbol.frequencyDomain[k] = constellation.points[rand() % constellation.length];
+                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerData % constellation.length];
 
                                         //rescale if I'm using only a few channels for higher power 
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
@@ -668,7 +631,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             }
                             //output = OFDMsymbolBaseband(OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart),
                                                         //OFDMstate);
-                            output = OFDMstate->OFDMsymbol.timeDomain[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
+                            output = OFDMstate->OFDMsymbol.timeDomain.buffer[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
 
                             //output = output * 0.5;
 
@@ -683,7 +646,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
                             //output = OFDMsymbolBaseband(n - OFDMstate->state.symbolStart,
                                                         //OFDMstate);
-                            output = OFDMstate->OFDMsymbol.timeDomain[n - OFDMstate->state.symbolStart];
+                            output = OFDMstate->OFDMsymbol.timeDomain.buffer[n - OFDMstate->state.symbolStart];
                             //output = output;
 
                             // check for exit
@@ -746,7 +709,9 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
     if(OFDMstate->simulateNoise)
     {
         double noiseAmplitude = 0.003;
-        equalizedSample.sample += (double)rand() / ((double)RAND_MAX / (noiseAmplitude)) - (noiseAmplitude / 2);
+        double randomDouble;
+        drand48_r(&OFDMstate->channelNoisePRNG, &randomDouble);
+        equalizedSample.sample += randomDouble * noiseAmplitude - noiseAmplitude / 2;
     }
 
     *outputSample = equalizedSample;
@@ -937,7 +902,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     int retval = 0;
 
     FILE* aplayStdIn = NULL;
-
+    int useAplay = 0;   // if 1, will output to aplay
 
     int fileDescriptor = -1;
 
@@ -987,13 +952,16 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     }
 
     //puts(aplayCommandString);
-    aplayStdIn = popen(aplayCommandString, "w");
-
-    if (aplayStdIn == NULL)
+    if(useAplay)
     {
-        fprintf(stderr, "Failed to open aplay: %s\n", strerror(errno));
-        retval = 3;
-        goto exit;
+        aplayStdIn = popen(aplayCommandString, "w");
+
+        if (aplayStdIn == NULL)
+        {
+            fprintf(stderr, "Failed to open aplay: %s\n", strerror(errno));
+            retval = 3;
+            goto exit;
+        }
     }
 
 #if DEBUG_LEVEL >= 1
@@ -1072,7 +1040,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
 
     // calculate all the samples
     // seed the random number generator
-    srand(time(NULL));
+    //srand(time(NULL));
     while(n < length)
     {
         // calculate a chunk of samples until the buffer is full or max is reached. one sample at a time, 4 bytes at a time
@@ -1100,7 +1068,8 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
                 buffer[bufferReadyBytes + i] = byte;
 
                 // send to the pipes one byte at a time since they are buffered by the OS
-                putc(byte, aplayStdIn);
+                if(useAplay)
+                    putc(byte, aplayStdIn);
 
             #if DEBUG_LEVEL >= 1
                 if (outputstd == 0)
@@ -1137,7 +1106,8 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     }
 
 exit:
-    pclose(aplayStdIn);
+    if(aplayStdIn)
+        pclose(aplayStdIn);
     if (outputstd == 0)
     {
         close(fileDescriptor);

@@ -53,7 +53,7 @@ $(BUILD_DIR)/qam: $(BUILD_DIR)/qam.o $(BUILD_DIR)/utilities.o
 	@echo [ LD ] $@
 	@$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/qamDecoder: $(BUILD_DIR)/qamDecoder.o
+$(BUILD_DIR)/qamDecoder: $(BUILD_DIR)/qamDecoder.o $(BUILD_DIR)/utilities.o
 	@echo [ LD ] $@
 	@$(CC) $^ -o $@ $(LDFLAGS)
 
