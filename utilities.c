@@ -16,15 +16,13 @@
 
 void initializeOFDMstate(OFDM_state_t *OFDMstate)
 {
-    // initialize the state
-
+    // initialize the OFDM basic parameters
+    //OFDMstate->sampleRate = 44100;
     OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
-                                       //OFDMstate->guardPeriod = 128;
     OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
-                                                          //OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 8;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
     OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
     OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
-    OFDMstate->pilotSymbolsPitch = 25;
+    OFDMstate->pilotSymbolsPitch = 100;
     
     // initialize fftw arrays for both recieve and transmit
     initializeCircularBuffer_fftw_complex(&OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->channels, 0);

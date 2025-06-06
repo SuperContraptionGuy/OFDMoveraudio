@@ -1091,6 +1091,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
     {
         initializeOFDMstate(OFDMstate);
 
+        OFDMstate->dataOutput = fopen("receiverSequence", "w");
+
         // initialize the state
         OFDMstate->state.frame = SEARCHING;
         OFDMstate->state.frameStart = sample->sampleIndex;
@@ -1108,8 +1110,9 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
             OFDMstate->samplingFrequencyOffsetEstimate = 0;
             OFDMstate->samplingFrequencyOffsetResidual = 0;
         } else {
-            OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
-            //OFDMstate->samplingFrequencyOffsetEstimate = 0;
+            //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
+            //OFDMstate->samplingFrequencyOffsetEstimate = 80/pow(10,6);
+            OFDMstate->samplingFrequencyOffsetEstimate = 0;
             OFDMstate->samplingFrequencyOffsetResidual = 0;
         }
         OFDMstate->pilotSymbolsLength = OFDMstate->channels / OFDMstate->pilotSymbolsPitch;
@@ -1231,34 +1234,11 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
 
 
             // auto correlation filter preample detector
-            // run a correlation between the first half of the symbol in the buffer, and the second half
-            /*
-            double convolutionSecondHalfEnergy = 0;
-            double convolutionAutocorrelation = 0;
-            for(int i = 0; i < OFDMstate->ofdmPeriod / 2; i++)
-            {
-                //break;
-                int firstHalfIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex + 1 + i) % OFDMstate->preambleDetectorInputBuffer.length;
-                int secondHalfIndex = (firstHalfIndex + OFDMstate->ofdmPeriod / 2) % OFDMstate->preambleDetectorInputBuffer.length;
-
-                //OFDMstate->autoCorrelation.sample += OFDMstate->preambleDetectorInputBuffer.buffer[firstHalfIndex] * OFDMstate->preambleDetectorInputBuffer.buffer[secondHalfIndex];
-                convolutionAutocorrelation += OFDMstate->preambleDetectorInputBuffer.buffer[firstHalfIndex] * OFDMstate->preambleDetectorInputBuffer.buffer[secondHalfIndex];
-                convolutionSecondHalfEnergy += pow(OFDMstate->preambleDetectorInputBuffer.buffer[secondHalfIndex], 2);
-            }
-            */
             // simplified iterative version of the auto correlation
             static double iterativeAutocorrelation = 0;
             static double secondHalfEnergy = 0;
             OFDMstate->autoCorrelation.sample = 0;
             OFDMstate->autoCorrelation.sampleIndex = OFDMstate->preambleDetectorInputBuffer.n - OFDMstate->ofdmPeriod;
-            //int secondHalfSecondIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex) % OFDMstate->preambleDetectorInputBuffer.length;
-            //int secondHalfFirstIndex = (secondHalfSecondIndex - (OFDMstate->preambleDetectorInputBuffer.length / 2 - 1)) % OFDMstate->preambleDetectorInputBuffer.length;
-
-            //int firstHalfFirstIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex + 1) % OFDMstate->preambleDetectorInputBuffer.length;
-            //int firstHalfSecondIndex = (firstHalfFirstIndex + OFDMstate->preambleDetectorInputBuffer.length / 2 - 1) % OFDMstate->preambleDetectorInputBuffer.length;
-            //int secondHalfFirstIndex = (firstHalfFirstIndex + OFDMstate->preambleDetectorInputBuffer.length / 2 - 1) % OFDMstate->preambleDetectorInputBuffer.length;
-            //int secondHalfSecondIndex = (secondHalfFirstIndex + OFDMstate->preambleDetectorInputBuffer.length / 2 - 1) % OFDMstate->preambleDetectorInputBuffer.length;
-
             int firstHalfFirstIndex = (OFDMstate->preambleDetectorInputBuffer.insertionIndex + OFDMstate->preambleDetectorInputBuffer.length - OFDMstate->ofdmPeriod) % OFDMstate->preambleDetectorInputBuffer.length;
             int firstHalfSecondIndex = (firstHalfFirstIndex + OFDMstate->ofdmPeriod / 2) % OFDMstate->preambleDetectorInputBuffer.length;
             int secondHalfFirstIndex = (firstHalfSecondIndex) % OFDMstate->preambleDetectorInputBuffer.length;
@@ -1279,10 +1259,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
 
             // I think this causes issues with quiet tones auto correlating to high values and triggering a frame detection. I don't know the solution
             OFDMstate->autoCorrelation.sample = fabs(iterativeAutocorrelation) / secondHalfEnergy; // normalization to remove average gain dependance
-
             if(secondHalfEnergy == 0)
                 OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
-
             // uncomment to disable the shitty auto gain
             OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation / 10); // enable if the autocorrelation normalization is to be ignored
 
@@ -1309,26 +1287,11 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
             OFDMstate->timingFilterInputBuffer.insertionIndex = (OFDMstate->timingFilterInputBuffer.insertionIndex + 1) % OFDMstate->timingFilterInputBuffer.length;
 
             // graph the correlation function
-            //if(debugPlots.OFDMtimingSyncEnabled)
             if(debugPlots.OFDMtimingSyncEnabled && retimedSample.sampleIndex % 500 == 0)
             {
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 0, OFDMstate->autoCorrelation.sample);
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", retimedSample.sampleIndex, 1, retimedSample.sample);
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", sample->sampleIndex, 2, sample->sample);
-
-                // average
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 8, windowAverage.sample);
-
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelationDerivative.sampleIndex, 3, OFDMstate->autoCorrelationDerivative.sample + 1);
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 4, averageValue.sample);
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageDerivative.sampleIndex, 5, averageDerivative.sample + 1);
-
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex + OFDMstate->ofdmPeriod / 2, 7, point_dl * point_d2l);
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 8, point_d * point_dl);
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 9, convolutionAutocorrelation);
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 10, convolutionSecondHalfEnergy);
-
-                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", OFDMstate->autoCorrelation.sampleIndex, 11, secondHalfEnergy);
             }
 
             // preambe triggered
@@ -1413,6 +1376,9 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
 
                         // use the symbols of the preamble to estimate sampling frequency offset and do channel estimation
 
+                        // random integer for reconstructing signal
+                        long int randomInteger;
+
                         // do SFO estimation on the preamble samples by running the FFT on the first half and the second half independently
                         // this is for symetric symbols (just the first two)
                         if(OFDMstate->state.symbolIndex < 2)
@@ -1423,17 +1389,26 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                             double samplingFrequencyOffsetEstimate = 0;
                             double normalizationFactor = 0;
                             // calculate sampling frequency offset (skip DC and highest frequency in the DFTs)
-                            for(int i = 1; i < OFDMstate->channels / 2 - 1; i++)
+                            //for(int i = 1; i < OFDMstate->channels / 2 - 1; i++)
+                            for(int k = 1; k < OFDMstate->channels - 1; k++)
                             {
-                                // estimate sampling frequency offset
-                                // does not take into account the length of a guard interval inbetween
-                                // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
-                                samplingFrequencyOffsetEstimate += 
-                                    carg(OFDMstate->IQrateDetectorFirstHalf.frequencyDomain.buffer[i] 
-                                            / OFDMstate->IQrateDetectorSecondHalf.frequencyDomain.buffer[i])
-                                    / (2 * M_PI * i)
-                                    * i;
-                                normalizationFactor += i;
+                                if(k % 2 == 0)
+                                {
+                                    int i = k / 2;
+                                    constellation_complex_t constellation = OFDMstate->constellations[0];
+                                    lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
+                                    complex double expectedIQ = constellation.points[randomInteger % constellation.length];
+
+                                    // estimate sampling frequency offset
+                                    // does not take into account the length of a guard interval inbetween
+                                    // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
+                                    samplingFrequencyOffsetEstimate += 
+                                        carg(OFDMstate->IQrateDetectorFirstHalf.frequencyDomain.buffer[i] 
+                                                / OFDMstate->IQrateDetectorSecondHalf.frequencyDomain.buffer[i])
+                                        / (2 * M_PI * i)
+                                        * i;
+                                    normalizationFactor += i;
+                                }
                             }
                             samplingFrequencyOffsetEstimate /= normalizationFactor;
 
@@ -1457,10 +1432,20 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                         // for the second, store the decoded IQ values into a buffer
                         else if(OFDMstate->state.symbolIndex % 2 == 0)
                         {
-                            for(int i = 0; i < OFDMstate->channels; i++)
+                            for(int k = 1; k < OFDMstate->channels - 1; k++)    // skip DC and Niquist
                             {
+                                constellation_complex_t constellation = OFDMstate->constellations[0];
+                                lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
+                                complex double expectedIQ = constellation.points[randomInteger % constellation.length];
+                                complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
+
                                 // copy values
-                                OFDMstate->sfoFirstSymbol.buffer[i] = OFDMstate->OFDMsymbol.frequencyDomain.buffer[i];
+                                OFDMstate->sfoFirstSymbol.buffer[k] = receivedIQ;
+
+                                // measure the channel response on each corrected symbol
+                                OFDMstate->channelEstimate[k] = receivedIQ / expectedIQ;
+
+                                fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomInteger, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), creal(OFDMstate->channelEstimate[k]), cimag(OFDMstate->channelEstimate[k]), OFDMstate->state.processedSymbols);
                             }
                         }
                         // and on the third, do some calculations to estimate the sampling frequency offset
@@ -1469,13 +1454,13 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                             double samplingFrequencyOffsetEstimate = 0;
                             double normalizationFactor = 0;
                             // calculate sampling frequency offset (skip DC and highest frequency
-                            for(int i = 1; i < OFDMstate->channels - 1; i++)
+                            for(int k = 1; k < OFDMstate->channels - 1; k++)
                             {
                                 // estimate sampling frequency offset
                                 // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
                                 // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
-                                samplingFrequencyOffsetEstimate += carg(OFDMstate->sfoFirstSymbol.buffer[i] / OFDMstate->OFDMsymbol.frequencyDomain.buffer[i]) / (2 * M_PI * i * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1)) * i;
-                                normalizationFactor += i;
+                                samplingFrequencyOffsetEstimate += carg(OFDMstate->sfoFirstSymbol.buffer[k] / OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]) / (2 * M_PI * k * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1)) * k;
+                                normalizationFactor += k;
                             }
                             samplingFrequencyOffsetEstimate /= normalizationFactor;
 
@@ -1486,20 +1471,12 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                 fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex, 1, samplingFrequencyOffsetEstimate * pow(10,6));
                             }
 
+
                             // adjust the offset estimate
                             samplingFrequencyOffsetEstimate *= 0.8;// weight
                             if(!OFDMstate->disableSFOestimation)
                                 OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate;
 
-                            // channel estimation
-                            for(int k = 0; k < OFDMstate->channels; k++)
-                            {
-                                // correct symbols for phase offsets due to last estimated offset SFO, correcting for the remaining phase offset
-                                // due to the last correction over the course of one half symbol
-                                //OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * samplingFrequencyOffsetEstimate);
-                                // measure the channel response on each corrected symbol
-                                OFDMstate->channelEstimate[k] = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
-                            }
                         }
 
 
@@ -1513,86 +1490,170 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
 
                     case DATA:
 
+                        double samplingFrequencyOffsetEstimate = 0;
+                        double normalizationFactor = 0;
 
-
-                        // grab pilot symbols and calculate an estimate for sampling frequency offset
-                        if(OFDMstate->state.symbolIndex == 0)
+                        for(int k = 1; k < OFDMstate->channels - 1; k++)
                         {
-                            // first pilot symbol
-                            for(int i = 1; i < OFDMstate->pilotSymbolsLength; i++)
+
+                            // calculating original data and pilot symbols
+                            long int randomIntegerPilot;
+                            //long int randomIntegerData;
+                            //lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerPilot);
+                            //lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+
+                            // grab pilot symbols and calculate an estimate for sampling frequency offset
+                            if(k % OFDMstate->pilotSymbolsPitch == 0)   // pilot channels
                             {
-                                int k = i * OFDMstate->pilotSymbolsPitch;
-                                OFDMstate->pilotSymbols[i] = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
+                                if(OFDMstate->state.symbolIndex == 0)
+                                {
+                                    // first pilot symbol
+                                    //for(int i = 1; i < OFDMstate->pilotSymbolsLength + 1; i++)
+                                    //for(int k = 1; k < OFDMstate->channels - 1; k++)
+                                    {
+                                        //if(k%OFDMstate->pilotSymbolsPitch == 0)
+                                        {
+                                            //int k = i * OFDMstate->pilotSymbolsPitch;
+                                            constellation_complex_t constellation = OFDMstate->constellations[0];
+                                            lrand48_r(&OFDMstate->pilotsPRNG, &randomIntegerPilot);
+                                            complex double expectedIQ = constellation.points[randomIntegerPilot % constellation.length];    // multiply by the BPSK expected pilot to remove randomness
+                                            complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
+                                            complex double currentPilotSymbol = receivedIQ * expectedIQ;    // multiply by the BPSK expected pilot to remove randomness
+                                            fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), creal(currentPilotSymbol), cimag(currentPilotSymbol), OFDMstate->state.processedSymbols);
+                                        }
+                                    }
+                                } else if(OFDMstate->state.symbolIndex > 0)
+                                {
+                                    // for each channel skip DC and highest frequency
+                                    //for(int k = 1; k < OFDMstate->channels - 1; k++)
+                                    {
+                                    //for(int i = 1; i < OFDMstate->pilotSymbolsLength + 1; i++)
+                                        //if(k % OFDMstate->pilotSymbolsPitch == 0)
+                                        //for(int i = OFDMstate->pilotSymbolsLength / 5; i < OFDMstate->pilotSymbolsLength * 3 / 5; i++)
+                                        {
+                                            // calculate sampling frequency offset 
+                                            // calculate channel index from pilot index
+                                            //int k = i * OFDMstate->pilotSymbolsPitch;
+                                            int i = k / OFDMstate->pilotSymbolsPitch;   // index into pilot symbol arrays
+
+                                            // testing the idea of excluding noisy pilot channels
+                                            // according to the amplitude of it's channel estimation
+                                            if(cabs(OFDMstate->channelEstimate[k]) < 1.5)
+                                                continue;
+
+                                            // estimate sampling frequency offset
+                                            // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
+                                            // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
+                                            constellation_complex_t constellation = OFDMstate->constellations[0];
+                                            lrand48_r(&OFDMstate->pilotsPRNG, &randomIntegerPilot);
+                                            complex double expectedIQ = constellation.points[randomIntegerPilot % constellation.length];    // multiply by the BPSK expected pilot to remove randomness
+                                            complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
+                                            complex double currentPilotSymbol= receivedIQ * expectedIQ;    // multiply by the BPSK expected pilot to remove randomness
+                                            fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), creal(currentPilotSymbol), cimag(currentPilotSymbol), OFDMstate->state.processedSymbols);
+
+                                            samplingFrequencyOffsetEstimate += 
+                                                carg(OFDMstate->pilotSymbols[i] / (currentPilotSymbol)) 
+                                                / (2 * M_PI * k * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1))
+                                                * k;
+                                            // move pilot value to the old buffer
+                                            OFDMstate->pilotSymbols[i] = currentPilotSymbol;
+                                            normalizationFactor += k;
+                                        }
+                                    }
+
+                                }
+                            } else { // data channels
+                                long int randomIntegerData;
+
+                                // now process again given the residual frequency error correction. might be able to combine with previous loop if I don't apply the correction until next symbol
+                                // correct for residual phase offsets since initial channel estimation
+                                //for(int k = 0; k < OFDMstate->channels; k++)
+                                //{
+                                // correct symbols for phase offsets due to residual SFO, over the course of 1 symbol.
+                                // not correct, not sure what the issue is yet
+                                //OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
+                                //}
+                                // run a discriminator to classify the recieved symbols
+                                // TODO
+                                // we could run some graphs on the equalizer error here
+
+                                // picking a sequential constellation, and a random point in that constellation discluding the first entry
+                                constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
+                                lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+                                complex double expectedIQ = constellation.points[randomIntegerData % constellation.length];
+                                complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
+                                fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), OFDMstate->state.processedSymbols);
+                                if(expectedIQ != 0) // make sure we can actually make an estimate, expected symbol isn't at the origin
+                                {
+                                    complex double estimatedEqualizerError = receivedIQ / expectedIQ;
+
+                                    // debug chart for the subchannel IQ plots
+                                    if(debugPlots.OFDMequalizerIQEnabled)
+                                    {
+                                        // draw a point for every subchannel
+                                        //double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;   // sizing the individual charts
+                                        double normalizationFactor = 4;
+                                        //for(int k = 0; k < OFDMstate->channels; k++)
+                                        //{
+                                        // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
+                                        int square = (int)ceil(sqrt(OFDMstate->channels));
+                                        double x = ((k % square));
+                                        double y = ((k / square));
+
+                                        // plot index for coloring preamble samples
+                                        int plotIndex = k;
+                                        /*
+                                           if(OFDMstate->state.processedSymbols == 0)   // first preamble symbol
+                                           plotIndex = 1;
+                                           else if(OFDMstate->state.processedSymbols < 4)   // second and third preamble symbols
+                                           plotIndex = 2;
+                                           else if(OFDMstate->state.symbolIndex < 20) // draw early symbols with different color
+                                           plotIndex = 3;
+                                           */
+
+                                        // plot each point
+                                        fprintf(debugPlots.OFDMequalizerIQStdin,
+                                                "%f %i %f\n",
+                                                x + creal(estimatedEqualizerError) / normalizationFactor,
+                                                plotIndex,
+                                                y + cimag(estimatedEqualizerError) / normalizationFactor);
+                                        //}
+                                    }
+                                }
                             }
-                        } else if(OFDMstate->state.symbolIndex > 0)
+                        }
+                        if(OFDMstate->state.symbolIndex > 0)    // calculations for SFO estimation using pilot channels
                         {
-                            double samplingFrequencyOffsetEstimate = 0;
-                            double normalizationFactor = 0;
-                            // calculate sampling frequency offset (skip DC and highest frequency
-                            for(int i = 1; i < OFDMstate->pilotSymbolsLength; i++)
-                            //for(int i = OFDMstate->pilotSymbolsLength / 5; i < OFDMstate->pilotSymbolsLength * 3 / 5; i++)
-                            {
-                                // calculate channel index from pilot index
-                                int k = i * OFDMstate->pilotSymbolsPitch;
-
-                                // testing the idea of excluding noisy pilot channels
-                                // according to the amplitude of it's channel estimation
-                                if(cabs(OFDMstate->channelEstimate[k]) < 1.5)
-                                    //printf("too low: %i\t\t%i\n", k, i);
-                                    continue;
-                                //printf("used: %i\t\t%i\n", k, i);
-
-                                // calculated phase adjustment for pilot symbols by currently known SFO residual
-                                // these phasors are always degenerate, since the residual is always 0 now
-                                //complex double phasor1 = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex - 1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
-                                //complex double phasor2 = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
-
-                                // estimate sampling frequency offset
-                                // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
-                                // result is in samplingFrequencyOffsetEstimateratio of sampling frequency offset
-                                samplingFrequencyOffsetEstimate += 
-                                    //carg(OFDMstate->pilotSymbols[i] * phasor1 / (OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] * phasor2)) 
-                                    carg(OFDMstate->pilotSymbols[i] / (OFDMstate->OFDMsymbol.frequencyDomain.buffer[k])) 
-                                    / (2 * M_PI * k * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1))
-                                    * k;
-                                // move pilot value to the old buffer
-                                OFDMstate->pilotSymbols[i] = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
-                                normalizationFactor += k;
-                                //normalizationFactor += 1;
-                            }
+                            // finish calculations for samplingFrequencyOffset
                             samplingFrequencyOffsetEstimate /= normalizationFactor;
 
                             if(debugPlots.OFDMsfoEstimatorEnabled)
-                            {
-                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 3, OFDMstate->samplingFrequencyOffsetResidual * pow(10, 6));
-                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 4, samplingFrequencyOffsetEstimate * pow(10,6));
-                                fprintf(debugPlots.OFDMsfoEstimatorStdin, "%i %i %f\n", OFDMstate->state.symbolIndex + 4, 5, (OFDMstate->samplingFrequencyOffsetResidual + OFDMstate->samplingFrequencyOffsetEstimate) * pow(10, 6));
-                            }
+                                fprintf(debugPlots.OFDMsfoEstimatorStdin, 
+                                        "%i %i %f\n"
+                                        "%i %i %f\n"
+                                        "%i %i %f\n",
+                                        OFDMstate->state.symbolIndex + 4, 3, OFDMstate->samplingFrequencyOffsetResidual * pow(10, 6),
+                                        OFDMstate->state.symbolIndex + 4, 4, samplingFrequencyOffsetEstimate * pow(10,6),
+                                        OFDMstate->state.symbolIndex + 4, 5, (OFDMstate->samplingFrequencyOffsetResidual + OFDMstate->samplingFrequencyOffsetEstimate) * pow(10, 6));
 
                             // decaying weight, with a minimum floor
-                            double weight = 0.5 * exp(-0.07 * OFDMstate->state.symbolIndex);
-                            weight = weight < 0.03 ? 0.03 : weight;
+                            double initialValue = 0.5;
+                            double decayConstant = 15;   // time in samples until the weight falls to 1/e of initial value
+                            double minimum = 0.03;      // minimum value
+                            //double minimum = initialValue;      // disables the exponential decay bit
+                            double weight = initialValue * exp(-OFDMstate->state.symbolIndex / decayConstant);
+                            weight = weight < minimum ? minimum : weight;
                             // adjust the offset estimate
                             if(!OFDMstate->disableSFOestimation)
                             {
                                 // store the offset into the residual for phase corrections since initial channel estimation
                                 OFDMstate->samplingFrequencyOffsetResidual += samplingFrequencyOffsetEstimate * weight;// *  0.70;
-                                // correct the resampler rate for future symbols
+                                                                                                                       // correct the resampler rate for future symbols
                                 OFDMstate->samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimate * weight;// *  0.70;
                             }
-
                         }
 
-                        // correct for residual phase offsets since initial channel estimation
-                        for(int k = 0; k < OFDMstate->channels; k++)
-                        {
-                            // correct symbols for phase offsets due to residual SFO, over the course of 1 symbol.
-                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
-                            //complex double value = cexp(I * 2 * M_PI * (OFDMstate->state.symbolIndex) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
-                            //printf("phase adjustment: %lf + %lf i\n", creal(value), cimag(value));
-                            // correct for channel estimation
-                        }
-                        // run a discriminator to classify the recieved symbols
+
 
                         break;
                 }
@@ -1620,7 +1681,11 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                             plotIndex = 3;
                         
                         // plot each point
-                        fprintf(debugPlots.OFDMrawIQStdin, "%f %i %f\n", x + creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]) / normalizationFactor, plotIndex, y + cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]) / normalizationFactor);
+                        fprintf(debugPlots.OFDMrawIQStdin,
+                                "%f %i %f\n",
+                                x + creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]) / normalizationFactor,
+                                plotIndex,
+                                y + cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]) / normalizationFactor);
                     }
                 }
 
@@ -1684,9 +1749,10 @@ int main(void)
     //debugPlots.channelFilterEnabled = 1;
     debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
-    debugPlots.OFDMrawIQEnabled = 1;
+    //debugPlots.OFDMrawIQEnabled = 1;
     debugPlots.OFDMsfoEstimatorEnabled = 1;
     //debugPlots.OFDMinterpolatorEnabled = 1;
+    //debugPlots.OFDMequalizerIQEnabled = 1;
 
     // for live plotting, pipe to feedgnuplot
     const char *plot =
@@ -1881,13 +1947,15 @@ int main(void)
         "--xlabel \"I\" --ylabel \"Q\" "
         );
     if(debugPlots.IQvsTimeEnabled)
+    {
         debugPlots.IQvsTimeStdin = popen(IQvstimeplot, "w");
 
-    if (debugPlots.IQvsTimeStdin == NULL)
-    {
-        fprintf(stderr, "Failed to create IQ vs Time plot: %s\n", strerror(errno));
-        retval = 7;
-        goto exit;
+        if (debugPlots.IQvsTimeStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create IQ vs Time plot: %s\n", strerror(errno));
+            retval = 7;
+            goto exit;
+        }
     }
 
     char *filterDebugPlot =
@@ -2112,6 +2180,26 @@ int main(void)
         }
     }
 
+    char *OFDMEqualizerIQPlot =
+        "feedgnuplot "
+        "--domain --dataid --points --lines "
+        "--maxcurves 9000 "
+        "--title \"IQ plots for every subchannel's equalizer error\" "
+        "--xlabel \"I\" --ylabel \"Q\" "
+        "--legend 0 \"samples\" "
+
+    ;
+    if(debugPlots.OFDMequalizerIQEnabled)
+    {
+        debugPlots.OFDMequalizerIQStdin = popen(OFDMEqualizerIQPlot, "w");
+        //debugPlots.OFDMrawIQStdin = fopen("IQrawPlotOutput", "w");
+        if(debugPlots.OFDMequalizerIQStdin == NULL)
+        {
+            fprintf(stderr, "Failed to create OFDM equalizer IQ plot: %s\n", strerror(errno));
+            retval = 14;
+            goto exit;
+        }
+    }
     // I might want to slightly over sample the signal for the benefit of interpolation.
     // basically this is taking advantage of ffmpeg's interpolation filters, simplifying my program's architecture
     // I could internalize the call to ffmpeg, or write my own filter that can handle increasing sample rates rather than just decreasing sample rates
@@ -2120,6 +2208,8 @@ int main(void)
     int sampleRate = 192000;
     //int upconvertionSampleRate = 192000;
 
+    OFDM_state_t OFDMstate = {0};
+    OFDMstate.sampleRate = 44100;   // set the main sample rate for the decoder, but the incomming samples could have a higher rate
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
@@ -2152,8 +2242,6 @@ int main(void)
         demodulateQAM(&sample, QAMstate, debugPlots);
         */
 
-        static OFDM_state_t OFDMstate = {0};
-        OFDMstate.sampleRate = 44100;   // set the main sample rate for the decoder, but the incomming samples could have a higher rate
         demodualteOFDM(&sample, &OFDMstate, debugPlots);
 
 

@@ -98,6 +98,7 @@ typedef struct
     FILE* OFDMrawIQStdin;
     FILE* OFDMinterpolatorStdin;
     FILE* OFDMsfoEstimatorStdin;
+    FILE* OFDMequalizerIQStdin;
     union
     {
         struct
@@ -118,6 +119,7 @@ typedef struct
             unsigned int OFDMrawIQEnabled           : 1;
             unsigned int OFDMinterpolatorEnabled    : 1;
             unsigned int OFDMsfoEstimatorEnabled    : 1;
+            unsigned int OFDMequalizerIQEnabled     : 1;
 
         };
             unsigned long int flags;
@@ -296,33 +298,6 @@ typedef struct
     struct drand48_data predefinedDataPRNG;
     struct drand48_data channelNoisePRNG;
 
-    // Sender relevant
-    //
-
-    FILE* dataInput;    // pipe to read data from that will be sent of the channel
-    char inputByte;     // the current working byte
-    int bitOffset;      // hold the offset in bits from the beginning of the current byte pulled from the dataInput file
-    FILE* generatedDataOutput;  // print the randomly generated data that was encoded in a file
-
-    // array length of channels representing the current entire OFDM symbol
-    //double complex *currentOFDMSymbol;
-    
-    // channel simulation stuff
-    int simulateNoise;
-    int simulateChannel;    // 0 don't simulate, 1 simulate
-    overlap_save_buffer_double_t channelSimulationBuffer;   // holds samples to be used for simulating channel impulse response
-    circular_buffer_double_t channelImpulseResponse;    // holds the impulse response of the channel.
-
-    fftw_OFDM_buffer_t OFDMsymbol;
-    //circular_buffer_double_t fftwSymbolBuffer;              // holds the incoming ofdmPeriod number of samples
-    //circular_buffer_complex_t fftwIQbuffer;             // the decoded symbol
-
-    fftw_OFDM_buffer_t IQrateDetectorFirstHalf;
-    fftw_OFDM_buffer_t IQrateDetectorSecondHalf;
-    //circular_buffer_complex_t fftwIQrateDetectorFirstHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
-    //circular_buffer_complex_t fftwIQrateDetectorSecondHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
-
-
     // constellations array
     constellation_complex_t *constellations;
     int constellationsLength;
@@ -363,8 +338,38 @@ typedef struct
         } symbol;   // an atomic OFDM symbol
     } state;
 
+    // Sender relevant
+    //
+
+    FILE* dataInput;    // pipe to read data from that will be sent of the channel
+    char inputByte;     // the current working byte
+    int bitOffset;      // hold the offset in bits from the beginning of the current byte pulled from the dataInput file
+    FILE* generatedDataOutput;  // print the randomly generated data that was encoded in a file
+
+    // array length of channels representing the current entire OFDM symbol
+    //double complex *currentOFDMSymbol;
+    
+    // channel simulation stuff
+    int simulateNoise;
+    int simulateChannel;    // 0 don't simulate, 1 simulate
+    overlap_save_buffer_double_t channelSimulationBuffer;   // holds samples to be used for simulating channel impulse response
+    circular_buffer_double_t channelImpulseResponse;    // holds the impulse response of the channel.
+
+    fftw_OFDM_buffer_t OFDMsymbol;
+    //circular_buffer_double_t fftwSymbolBuffer;              // holds the incoming ofdmPeriod number of samples
+    //circular_buffer_complex_t fftwIQbuffer;             // the decoded symbol
+
+    fftw_OFDM_buffer_t IQrateDetectorFirstHalf;
+    fftw_OFDM_buffer_t IQrateDetectorSecondHalf;
+    //circular_buffer_complex_t fftwIQrateDetectorFirstHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
+    //circular_buffer_complex_t fftwIQrateDetectorSecondHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
+
+
+
     // Reciever relevant
     //
+
+    FILE* dataOutput;    // pipe to read data from that will be sent of the channel
 
     circular_buffer_double_t preambleDetectorInputBuffer; // holds the last ofdmPeriod plus a little of samples for preamble detection
 

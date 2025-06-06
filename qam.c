@@ -373,12 +373,12 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->state.frameStart = n;
         
         // initialize channel simulation filter
-        OFDMstate->simulateNoise = 0;
+        OFDMstate->simulateNoise = 1;
         OFDMstate->simulateChannel = 0;
 
         OFDMstate->dataInput = fopen("inputData", "r");
         OFDMstate->bitOffset = 0;
-        OFDMstate->generatedDataOutput = fopen("generatedData", "w");
+        OFDMstate->generatedDataOutput = fopen("senderSequence", "w");
 
 
         if(OFDMstate->simulateChannel)
@@ -422,17 +422,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
             
             // wait for enough data in the pipe to generate a frame, or wait for enough time to pass to send a frame anyway.
 
-            // transmit a burst of noise at high power to help synchronizer detect future ISI?
-            //if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod - OFDMstate->guardPeriod - 1)
-            if(0)
-            {
-                double noiseAmplitude = 0.1 * OFDMstate->ofdmPeriod;  // there is a normalization factor
-                //output += (double)rand() / ((double)RAND_MAX / (noiseAmplitude)) - (noiseAmplitude / 2);
-                double value;
-                drand48_r(&OFDMstate->channelNoisePRNG, &value);
-                output += value * noiseAmplitude - noiseAmplitude / 2;
-            }
-
             // check for exit from IDLE frame
             if(n - OFDMstate->state.frameStart >= OFDMstate->symbolPeriod * 3 - 1) // example of state change based on timing
             {
@@ -460,11 +449,11 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             {
                                 // set new symbol for testing
                                 // generate a symetric symbol, with even frequency components only for syncronization
-                                for(int k = 0; k < OFDMstate->channels; k++)
+                                // skipping DC and Niquist frequencies
+                                for(int k = 1; k < OFDMstate->channels - 1; k++)
                                 {
                                     // generate a random integer for constellation choices
                                     long int randomInteger;
-                                    lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
 
                                     if(OFDMstate->state.symbolIndex < 2)    // generate symetric symbols for the first two symbols
                                     {
@@ -477,17 +466,15 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                         //if(k == 0)
                                         //if(0)
                                         {
-                                           // OFDMstate->OFDMsymbol.frequencyDomain[k] =
-                                           //     rand() % 2 * 2 - 1 +
-                                           //     I*(rand() % 2 * 2 - 1);
-                                                //I;    // testing
                                             constellation_complex_t constellation = OFDMstate->constellations[0];
+                                            lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomInteger % constellation.length];
+
                                         } else {
-                                            //OFDMstate->currentOFDMSymbol[k] = 0;
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = 0;
                                         }
-                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 200 / 30;
+                                        //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 200 / 30;   // normalization factor for fewer channels used
+                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] *= M_SQRT2;  // scale factor for even only channels
 
                                         // time domain samples are now in the OFDMstate->OFDMsymbol.timeDomain array
 
@@ -502,7 +489,10 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                             //    I*(rand() % 2 * 2 - 1);
                                                 //0;
                                             constellation_complex_t constellation = OFDMstate->constellations[0];
+                                            lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomInteger % constellation.length];
+
+                                            fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomInteger, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
                                         } else {
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] =
                                                 0;
@@ -522,13 +512,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                                         //OFDMstate);
                             output = OFDMstate->OFDMsymbol.timeDomain.buffer[OFDMstate->ofdmPeriod - OFDMstate->guardPeriod + (n - OFDMstate->state.symbolStart)];
 
-                            if(OFDMstate->state.symbolIndex < 2)
-                            {
-                                output *= M_SQRT2;  // scale factor for even only channels
-                                //output = 0; // trying no guard period for the first symbol of preamble, to help find the precise sync point
-                            }
-                            //output = output * 0.5;
-
                             // check for exit form GUARD_PERIOD symbol
                             if(n - OFDMstate->state.symbolStart >= OFDMstate->guardPeriod - 1)
                             {
@@ -541,10 +524,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             //output = OFDMsymbolBaseband(n - OFDMstate->state.symbolStart,
                                                         //OFDMstate);
                             output = OFDMstate->OFDMsymbol.timeDomain.buffer[n - OFDMstate->state.symbolStart];
-
-                            if(OFDMstate->state.symbolIndex < 2)
-                                output *= M_SQRT2;
-                            //output = output;
 
                             // check for exit
                             if(n - OFDMstate->state.symbolStart >= OFDMstate->ofdmPeriod - 1)
@@ -566,7 +545,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                     break;
                 case DATA:
 
-                    output = 1; // testing only
 
                     switch(OFDMstate->state.symbol)
                     {
@@ -581,6 +559,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 // a different constellation for each sub channel, useful for taking advantage of low noise subchannels without increasing
                                 // error rates on noisy channels
                                 /*
+                                // choosing random blocks of channels to tranmit on for fun
                                 static int center;
                                 static int width;
                                 if(rand() % 5 == 0 || OFDMstate->state.symbolIndex == 0)
@@ -589,15 +568,26 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     width = rand() % OFDMstate->channels;
                                 }
                                 */
-                                for(int k = 0; k < OFDMstate->channels; k++)
+                                // skip DC and Niquist
+                                for(int k = 1; k < OFDMstate->channels - 1; k++)
                                 {
                                     // generate a random index
                                     long int randomIntegerPilot;
                                     long int randomIntegerData;
-                                    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerPilot);
-                                    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+                                    //lrand48_r(&OFDMstate->pilotsPRNG, &randomIntegerPilot);
+                                    //lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
 
-                                    //if(1)   // transmit on all subchannels
+                                    if(k % OFDMstate->pilotSymbolsPitch == 0) // transmit pilot symbols on pilot channels
+                                    {
+                                        // pilot symbols
+                                        constellation_complex_t constellation = OFDMstate->constellations[0];
+                                        lrand48_r(&OFDMstate->pilotsPRNG, &randomIntegerPilot);
+
+                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerPilot % constellation.length];
+                                        fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+
+                                    } else  // and use the rest for data channels 
+                                    if(1)   // transmit on all other subchannels
                                     //if(k > 250 && k < 6000)
                                     //if(k > 250 && k < 350)
                                     //if(k > 7000 && k < 8000) // using a select number of channels to simplify the signal for testing
@@ -605,17 +595,13 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     //if(k % (OFDMstate->channels / 4) > startChunk && k % (OFDMstate->channels / 4) < startChunk + 10)
                                     // choose random blocks
                                     //if(k < center + width / 2 && k > center - width / 2)
-                                    if(k % OFDMstate->pilotSymbolsPitch == 0) // transmit pilot symbols on pilot channels
                                     {
-                                        // pilot symbols
-                                        constellation_complex_t constellation = OFDMstate->constellations[0];
-                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerPilot % constellation.length];
-
-                                    } else {    // and use the rest for data channels
                                         
                                         // picking a sequential constellation, and a random point in that constellation discluding the first entry
                                         constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
+                                        lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
                                         OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerData % constellation.length];
+                                        fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
 
                                         //rescale if I'm using only a few channels for higher power 
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
@@ -623,6 +609,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
 
                                     //} else {
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] = 0;
+                                    } else {
+                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = 0;
                                     }
                                 }
                                 // now do the transform
@@ -644,10 +632,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                             break;
                         case OFDM_PERIOD:
 
-                            //output = OFDMsymbolBaseband(n - OFDMstate->state.symbolStart,
-                                                        //OFDMstate);
                             output = OFDMstate->OFDMsymbol.timeDomain.buffer[n - OFDMstate->state.symbolStart];
-                            //output = output;
 
                             // check for exit
                             if(n - OFDMstate->state.symbolStart >= OFDMstate->ofdmPeriod - 1)
@@ -674,20 +659,12 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
     double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 10;   // normalization factor due to the inverse transform
     output /= normalizationFactor;
 
-    /*
-    // impulse train for testing the channel simulator
-    output = 0;
-    if(n % 10000 == 0)
-        output = 1;
-    */
-
     // channel simulation
     sample_double_t equalizedSample;
     // decide whether to simulate the channel response or not
     if(OFDMstate->simulateChannel)
     {
         // channel simulation filter
-        //OFDMstate->channelSimulationBuffer.insertionIndex = n % OFDMstate->channelSimulationBuffer.length;
         OFDMstate->channelSimulationBuffer.buffer[OFDMstate->channelSimulationBuffer.insertionIndex] = output;
         OFDMstate->channelSimulationBuffer.n = n;
 
@@ -778,7 +755,7 @@ static double singleChannelODFM_noguard(int n, int sampleRate)
 }
 
 // this is the point where samples are generated
-static double WARN_UNUSED calculateSample(int n, int sampleRate)
+static double WARN_UNUSED calculateSample(int n, OFDM_state_t *OFDMstate)
 {
 
     // I think I need to keep polling for a sample until SAMPLE RETURNED
@@ -792,8 +769,6 @@ static double WARN_UNUSED calculateSample(int n, int sampleRate)
     */
 
 
-    static OFDM_state_t OFDMstate = {0};
-    OFDMstate.sampleRate = sampleRate;
     sample_double_t returnedSample;
 
     static buffered_data_return_t returnValue = AWAITING_SAMPLES;
@@ -804,13 +779,13 @@ static double WARN_UNUSED calculateSample(int n, int sampleRate)
         for(int i = n; returnValue == AWAITING_SAMPLES; i++)
         {
             // call the function as many times as needed until it returns a sample
-            returnValue = OFDM(i, &returnedSample, &OFDMstate);
+            returnValue = OFDM(i, &returnedSample, OFDMstate);
             offset = i;
         }
         return returnedSample.sample;
     }
     // from then on just run once per sample
-    OFDM(n + offset, &returnedSample, &OFDMstate);
+    OFDM(n + offset, &returnedSample, OFDMstate);
     return returnedSample.sample;
 
     //return OFDM(n, &OFDMstate);
@@ -915,6 +890,9 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     //long length = (1<<12) * 5 + sampleRate * 0.25;
     // the number of the current sample
     long n = 0;
+
+    OFDM_state_t OFDMstate = {0};
+    OFDMstate.sampleRate = sampleRate;
 
     // length of the file write buffer, samples times 4 bytes per sample
     const int bufferLength = 100 * 4;
@@ -1054,7 +1032,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
             char byte;
 
             // get the double sample value, should be between -1 and 1
-            sampleValue = calculateSample(n, sampleRate);
+            sampleValue = calculateSample(n, &OFDMstate);
             // calculate the final signed integer to be output as a sample
             // the magnitude of the max is always one smaller than the magnitude of the min
             normalizedSampleValue.value = sampleValue * INT32_MAX;
