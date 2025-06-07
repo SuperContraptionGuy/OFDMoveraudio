@@ -2,7 +2,7 @@ BUILD_DIR := build
 
 CC := gcc
 
-SRCS := qam.c qamDecoder.c
+SRCS := ofdm.c ofdmDecoder.c
 OBJS := $(addprefix $(BUILD_DIR)/,$(SRCS:.c=.o))
 DEPS := $(OBJS:.o:.d)
 
@@ -38,22 +38,22 @@ LDFLAGS := \
 	-lm \
 	-lfftw3
 
-.PHONY: all qam qamDecoder clean
-all: qam qamDecoder
+.PHONY: all ofdm ofdmDecoder clean
+all: ofdm ofdmDecoder
 
-qam: $(BUILD_DIR)/qam
+ofdm: $(BUILD_DIR)/ofdm
 
-qamDecoder: $(BUILD_DIR)/qamDecoder
+ofdmDecoder: $(BUILD_DIR)/ofdmDecoder
 
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	@echo [ CC ] $@
 	@$(CC) -x c $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/qam: $(BUILD_DIR)/qam.o $(BUILD_DIR)/utilities.o
+$(BUILD_DIR)/ofdm: $(BUILD_DIR)/ofdm.o $(BUILD_DIR)/utilities.o
 	@echo [ LD ] $@
 	@$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/qamDecoder: $(BUILD_DIR)/qamDecoder.o $(BUILD_DIR)/utilities.o
+$(BUILD_DIR)/ofdmDecoder: $(BUILD_DIR)/ofdmDecoder.o $(BUILD_DIR)/utilities.o
 	@echo [ LD ] $@
 	@$(CC) $^ -o $@ $(LDFLAGS)
 
