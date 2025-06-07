@@ -660,7 +660,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
 
                                 fprintf(
                                     OFDMstate->dataOutput,
-                                    "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n",
+                                    "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi abs-> %lf %li\n",
                                     OFDMstate->state.symbolIndex,
                                     k,
                                     randomInteger,
@@ -670,6 +670,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                     cimag(receivedIQ),
                                     creal(OFDMstate->channelEstimate[k]),
                                     cimag(OFDMstate->channelEstimate[k]),
+                                    cabs(OFDMstate->channelEstimate[k]),
                                     OFDMstate->state.processedSymbols
                                 );
                             }
@@ -747,7 +748,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                             complex double currentPilotSymbol = receivedIQ * expectedIQ;    // multiply by the BPSK expected pilot to remove randomness
                                             // store pilot symbol for next symbol calculations
                                             OFDMstate->pilotSymbols[i] = currentPilotSymbol;
-                                            fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), creal(currentPilotSymbol), cimag(currentPilotSymbol), OFDMstate->state.processedSymbols);
+                                            //fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), creal(currentPilotSymbol), cimag(currentPilotSymbol), OFDMstate->state.processedSymbols);
                                         }
                                     }
                                 } else if(OFDMstate->state.symbolIndex > 0)
@@ -764,10 +765,6 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                             //int k = i * OFDMstate->pilotSymbolsPitch;
                                             int i = k / OFDMstate->pilotSymbolsPitch;   // index into pilot symbol arrays
 
-                                            // testing the idea of excluding noisy pilot channels
-                                            // according to the amplitude of it's channel estimation
-                                            //if(cabs(OFDMstate->channelEstimate[k]) < 1.5)
-                                                //continue;
 
                                             // estimate sampling frequency offset
                                             // takes into account the additional time for phasing due to the guard period, which was not included in Sliskovic2001, due to my usage of two independant complete OFDM symbols with a guard period in between
@@ -777,6 +774,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                             complex double expectedIQ = constellation.points[randomIntegerPilot % constellation.length];    // multiply by the BPSK expected pilot to remove randomness
                                             complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
                                             complex double currentPilotSymbol= receivedIQ * expectedIQ;    // multiply by the BPSK expected pilot to remove randomness
+                                            /*
                                             fprintf(
                                                     OFDMstate->dataOutput,
                                                     "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi %li\n",
@@ -791,13 +789,23 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                                     cimag(currentPilotSymbol),
                                                     OFDMstate->state.processedSymbols
                                                    );
-
-                                            samplingFrequencyOffsetEstimate += 
+                                               */
+                                            double samplingFrequencyOffsetEstimateChange = 
                                                 carg(OFDMstate->pilotSymbols[i] / (currentPilotSymbol)) 
                                                 / (2 * M_PI * k * ((double)OFDMstate->guardPeriod / OFDMstate->ofdmPeriod + 1))
                                                 * k;
+
                                             // move pilot value to the old buffer
                                             OFDMstate->pilotSymbols[i] = currentPilotSymbol;
+
+                                            // testing the idea of excluding noisy pilot channels
+                                            // according to the amplitude of it's channel estimation
+                                            // Should update this in the future to use the calculated SNR of
+                                            // a particular pilot channel
+                                            if(cabs(OFDMstate->channelEstimate[k]) < 0.5)
+                                                continue;
+
+                                            samplingFrequencyOffsetEstimate += samplingFrequencyOffsetEstimateChange;
                                             normalizationFactor += k;
                                         }
                                     }
@@ -826,7 +834,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                 lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
                                 complex double expectedIQ = constellation.points[randomIntegerData % constellation.length];
                                 complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
-                                fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), OFDMstate->state.processedSymbols);
+                                //fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), OFDMstate->state.processedSymbols);
                                 if(expectedIQ != 0) // make sure we can actually make an estimate, expected symbol isn't at the origin
                                 {
                                     complex double estimatedEqualizerError = receivedIQ / expectedIQ;

@@ -178,8 +178,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->state.frameStart = n;
         
         // initialize channel simulation filter
-        OFDMstate->simulateNoise = 0;
-        OFDMstate->simulateChannel = 0;
+        OFDMstate->simulateNoise = 1;
+        OFDMstate->simulateChannel = 1;
 
         OFDMstate->dataInput = fopen("inputData", "r");
         OFDMstate->bitOffset = 0;
@@ -490,7 +490,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
     // add noise to output after channel filtering
     if(OFDMstate->simulateNoise)
     {
-        double noiseAmplitude = 0.003;
+        //double noiseAmplitude = 0.003;
+        double noiseAmplitude = 0.03;
         double randomDouble;
         drand48_r(&OFDMstate->channelNoisePRNG, &randomDouble);
         equalizedSample.sample += randomDouble * noiseAmplitude - noiseAmplitude / 2;
