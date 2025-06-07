@@ -17,13 +17,6 @@
 
 #define WARN_UNUSED __attribute__((warn_unused_result))
 
-#define DEBUG_LEVEL 0
-#if DEBUG_LEVEL >= 1
-    FILE* hexdumpStdIn = NULL;
-    FILE* plotStdIn = NULL;
-#endif
-
-
 
 /*
  *  performs a DFT based linear convolution using overlap and save method
@@ -171,194 +164,6 @@ buffered_data_return_t channelFilter(const overlap_save_buffer_double_t *inputSa
     }
 
     return RETURNED_SAMPLE;
-}
-
-double raisedCosQAM(int n, int sampleRate)
-{
-    int carrierPeriod = 32;
-    int k = 1; // cycles per period
-    //double carrierFrequency = 5000;
-    double carrierFrequency = (double)sampleRate / carrierPeriod;
-    //int carrierFrequency = sampleRate / carrierPeriod;
-
-    //int symbolPeriod = 64; // audio samples per symbol
-    //double symbolPeriod = sampleRate / carrierFrequency * k; // audio samples per symbol
-    // array to store time series of filter data
-    static double *filter = NULL;
-    // array to store timeseries of IQ samples
-    static iqsample_t *IQdata = NULL;
-
-    if (n < 0)
-    {
-        if (filter != NULL)
-        {
-            free(filter);
-            filter = NULL;
-        }
-
-        if (IQdata != NULL)
-        {
-            free(IQdata);
-            IQdata = NULL;
-        }
-
-        return NAN;
-    }
-
-    // This is a sorta bug. the fact that everything is based on these integers is an issue. I think it causes discretization of carrier
-    // frequency and symbol periods, which means the output frequency is not what you put in. for example, 5000 Hz input turns out to be
-    // about 5500 Hz actual
-    int symbolPeriod = (int)(sampleRate / carrierFrequency * k); // audio samples per symbol
-    int filterSides = 10;    // number of symbols to either side of current symbol to filter with raised cos
-    int filterLengthSymbols = 2 * filterSides + 1;    // length of raised cos filter in IQ symbols, ie, how many IQ samples we need to generate the current symbol
-    int filterLength = filterLengthSymbols * symbolPeriod;  // length in audio samples
-
-
-    // phase offset that cycles through sequentially all phase offsets
-    //int phaseOffset = n *  2 / 1200 % symbolPeriod;
-    int phaseOffset = 0;
-    
-    /*
-    static int phaseOffset = -1;
-    if (phaseOffset == -1)
-        phaseOffset = rand() % symbolPeriod;
-    */
-    /*
-    static int phaseOffset = -1;
-    if (phaseOffset == -1 || (n % (carrierPeriod * 30)) == 0)
-        phaseOffset = rand() % symbolPeriod;
-    */
-
-    int originalN = n;  // for plotting
-    n -= phaseOffset;
-    n = n < 0 ? 0 : n - phaseOffset, 0;
-
-    // concept:
-    //  generate the raised cos filter data once
-    //  generate IQ samples ahead of time, just in time
-    //  generate audio samples based on those two pieces of info
-
-    static int initialized = 0;
-    if(!initialized)
-    {
-        // initialize raised cos filter data
-        filter = malloc((unsigned int)(sizeof(double) * filterLength)); // this never gets released. so, might wanna fix that TODO
-        for(int i = 0; i < filterLength; i++)
-        {
-            int filter_symbolIndex = i - filterLength / 2;    // should go -filterLength/2 -> 0 -> filterLength/2
-            // raised cos filter math
-            double b = 0.42;    // filter parameter beta
-            double filterValue = sin(M_PI * filter_symbolIndex / symbolPeriod) / (M_PI * filter_symbolIndex / symbolPeriod) * (cos(M_PI * b * filter_symbolIndex / symbolPeriod)) / (1 - pow(2 * b * filter_symbolIndex / symbolPeriod, 2));
-            if(!isfinite(filterValue))   // in case it's undefined, ie divide by zero case
-                filterValue = (double)symbolPeriod / 2 / b;
-            if(filter_symbolIndex == 0)
-                filterValue = 1;    // the math gives a divide by zero at index 0
-
-            filter[i] = filterValue;
-        }
-
-        // generate enough IQ samples for first audio sample
-        IQdata = malloc((unsigned int)(sizeof(iqsample_t) * filterLengthSymbols));  // TODO this is never freed. These should prob be passed in as a paramter and freed somewhere in the larger scope
-        for(int i = 0; i < filterLengthSymbols; i++)
-        {
-            int IQIndex = i - filterLengthSymbols / 2;    // shoud go from -filterlengthsymbols / 2 -> 0 -> filterlengthsymbols / 2
-            iqsample_t sample = {0, 0};
-            // fill the circular buffer in the right order so that index 0 turns out to be the first IQ sample
-            if(IQIndex < 0)
-            {
-                IQIndex = filterLengthSymbols + IQIndex;    // make positive
-                IQdata[IQIndex % filterLengthSymbols] = sample; // the negative time samples are 0
-            } else {
-                //IQdata[IQIndex % filterLengthSymbols] = impulse(IQIndex, 20);
-                //IQdata[IQIndex % filterLengthSymbols] = alternateI(IQIndex);
-                //IQdata[IQIndex % filterLengthSymbols] = alternateQ(IQIndex);
-                //IQdata[IQIndex % filterLengthSymbols] = randomQAM(2);
-                //IQdata[IQIndex % filterLengthSymbols] = sequentialIQ(IQIndex, 4);
-                IQdata[IQIndex % filterLengthSymbols] = randomQAM_withPreamble(IQIndex, 2);
-            }
-        }
-
-        // ensure initialize only runs once
-        initialized = 1;
-    }
-
-    // current symbol number
-    int symbolIndex = n / symbolPeriod;
-    int sampleIndex = n % symbolPeriod; // index of each sample in a symbol, where as n is increasing for the whole signal
-    //printf("phaseOffset: %i\tn: %i\tsymbolIndex: %i\tsampleIndex: %i\n", phaseOffset, n, symbolIndex, sampleIndex);
-    //int sampleIndex = fmod(n, symbolPeriod); // index of each sample in a symbol, where as n is increasing for the whole signal
-    // circular buffer index
-    int IQsampleIndex = symbolIndex % filterLengthSymbols;    // IQdata[IQsampleIndex] is current IQ sample, indexes above are future IQdata and below past IQ data both wrapping around until the are filterLengthSymbols / 2 away from current sample index
-
-    // generate the next future IQ sample when entering a new symbol period
-    //IQdata[(IQsampleIndex + filterLengthSymbols / 2) % filterLengthSymbols] = alternateI(symbolIndex + filterLengthSymbols / 2);
-    if(sampleIndex == 0)
-    {
-        int IQindex = (IQsampleIndex + filterLengthSymbols / 2) % filterLengthSymbols;
-        //IQdata[IQindex] = impulse(symbolIndex + filterLengthSymbols / 2, 20);
-        //IQdata[IQindex] = alternateI(symbolIndex + filterLengthSymbols / 2);
-        //IQdata[IQindex] = alternateQ(symbolIndex + filterLengthSymbols / 2);
-        //IQdata[IQindex] = randomQAM(2);
-        //IQdata[IQindex] = sequentialIQ(symbolIndex + filterLengthSymbols / 2, 4);
-        IQdata[IQindex] = randomQAM_withPreamble(symbolIndex + filterLengthSymbols / 2, 2);
-        IQindex = IQsampleIndex;
-    #if DEBUG_LEVEL > 0
-        fprintf(plotStdIn, "%i %i %f %i %f\n", originalN, 6, IQdata[IQsampleIndex].InPhase, 7, IQdata[IQsampleIndex].Quadrature);
-        fprintf(plotStdIn, "%i %i %i\n", originalN, 8, IQindex);
-    #endif
-    }
-
-    // add up raised cos contributions from all samples in the IQdata array
-    iqsample_t filteredIQsample = {0, 0};
-    for(int i = 0; i < filterLengthSymbols; i++)
-    //int i = symbolIndex % filterLengthSymbols;
-    //i = filterLengthSymbols - i - 1;
-    {
-        int filterIndex = (filterLengthSymbols - i - 1) * symbolPeriod + sampleIndex;    // pick a filter index
-        int IQIndex = (IQsampleIndex + i - filterLengthSymbols / 2) % filterLengthSymbols;
-        if(IQIndex < 0)
-            IQIndex = filterLengthSymbols + IQIndex;    // make sure index is positive and wraps backwards
-        filteredIQsample.InPhase += filter[filterIndex] * IQdata[IQIndex].InPhase;
-        filteredIQsample.Quadrature += filter[filterIndex] * IQdata[IQIndex].Quadrature;
-        //filteredIQsample.I += filter[filterIndex];
-        //filteredIQsample.I = IQdata[IQIndex].I;
-        //filteredIQsample.I += IQdata[IQIndex].I / filterLengthSymbols;
-    #if DEBUG_LEVEL > 0
-        //fprintf(plotStdIn, "%i %i %f\n", originalN + i, 8 + symbolIndex, IQdata[IQIndex].I);
-    #endif
-    }
-    // normalization for raised cos filter, prob not correct
-    //filteredIQsample.I /= 2;
-    //filteredIQsample.Q /= 2;
-    filteredIQsample.InPhase *= M_SQRT1_2;    // normalization factor for QAM constellation with max I and Q of 1, converts to max magnitude of 1
-    filteredIQsample.Quadrature *= M_SQRT1_2;
-
-    //return filter[symbolIndex%filterLengthSymbols*symbolPeriod+sampleIndex];
-    //return IQdata[(IQsampleIndex + n%filterLengthSymbols - filterLengthSymbols / 2) %filterLengthSymbols].I;
-    //return IQdata[IQsampleIndex].I;
-    //return filteredIQsample.I;
-    //return (double)i / filterLengthSymbols;
-    //return filter[n%filterLength];
-
-    //if(n % symbolPeriod < filterLengthSymbols)
-        //return IQdata[(IQsampleIndex + sampleIndex) % filterLengthSymbols].I;
-    //return -0.5;
-
-    //filteredIQsample.I = 1;
-    //filteredIQsample.Q = 0;
-
-    double audioSample =
-    (
-        (filteredIQsample.InPhase) * cos(2.0 * M_PI * sampleIndex * k / symbolPeriod) +
-        (filteredIQsample.Quadrature) * sin(2.0 * M_PI * sampleIndex * k / symbolPeriod)
-    ) / 2.0;    // normalization factor for sum of sin+cos of amp 1 not exceeding 1
-#if DEBUG_LEVEL > 0
-    fprintf(plotStdIn, "%i %i %i %i %i %i %f %i %i\n", originalN, 0, symbolIndex, 1, sampleIndex, 2, audioSample, 3, phaseOffset);
-    fprintf(plotStdIn, "%i %i %f %i %f\n", originalN, 4, filteredIQsample.InPhase, 5, filteredIQsample.Quadrature);
-#endif
-
-   return audioSample;
-
 }
 
 // runs the state machine for an OFDM based communication transmitter
@@ -696,64 +501,6 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
     return RETURNED_SAMPLE;
 }
 
-// really this is generating a single OFDM channel without guard periods,
-// missing some critical infrustructure
-static double singleChannelODFM_noguard(int n, int sampleRate)
-{
-    int symbolPeriod = 256;
-    int guardPeriod = 4./1000 * sampleRate;     // I've found that the echos in a room last for about 3ms, durring that period, the symbol is phase offset and otherwise changed due to the last symbol and the transition between symbols
-    //int guardPeriod = 0;    // have to disable for QAM, ie, set to 0, instead use a raised cosine filter for ISI combat
-    int totalPeriod = symbolPeriod + guardPeriod;
-    int k = 16;      // this is effectively the OFDM channel number, how many cycles per sample period
-
-    // generating offsets in time to test the frame time syncronizer in qamDecoder
-    // phase offset that cycles through sequentially all phase offsets
-    //int phaseOffset = n *  2 / 2000 % symbolPeriod;
-    // no phase offset
-    //int phaseOffset = 0;
-    // random phase offset
-    static int phaseOffset = -1;
-    if (phaseOffset == -1)
-        phaseOffset = rand() % symbolPeriod;
-
-    // apply phase offset
-    n += phaseOffset;
-
-    iqsample_t sample;  // The IQ sample currently being worked on, temporal resolution to audio sample
-    double audioSample; // the final audio sample
-    int symbolIndex = n / totalPeriod;  // symbol number indexed from 0, temporal resolution to IQ sample
-
-    // random IQ in constelation defined by power
-    int power = 2;  // log base2 of number of symbols. number of symbols should also be a perfect square
-    int symbols = (int)pow(2, power);
-    int square = (int)sqrt(symbols);
-
-    // get IQ samples from the IQ sampling function
-    sample = randomQAM_withPreamble(symbolIndex, square);
-
-    // amplitude adjustment
-    //double totalAmplitude = 0.01;
-    double totalAmplitude = 1;
-    //double totalAmplitude = 0.5;
-
-    // random noise injection to IQ value
-    double randomness = 0.0;
-    double randI = ((double)rand() / RAND_MAX * 2 - 1) * randomness;
-    double randQ = ((double)rand() / RAND_MAX * 2 - 1) * randomness;
-
-    // implementing guard period
-    // turns out this fucks up the gardner algorithm. ONLY for OFDM, not for QAM. Will use this later probs. disable by setting guard period to 0
-    // time index of each symbol to resolution of audio sample
-    int symbolStep = n % totalPeriod - guardPeriod;   // should be guardPeriod -> symbolPeriod -> 0 -> symbolPeriod as n increases from 0 -> totalPeriod
-    audioSample =
-    (
-        (sample.InPhase + randI) * cos(2.0 * M_PI * symbolStep * k / symbolPeriod) +
-        (sample.Quadrature + randQ) * sin(2.0 * M_PI * symbolStep * k / symbolPeriod)
-    ) / 2.0 * sqrt(2.0) * totalAmplitude;
-
-   return audioSample;
-}
-
 // this is the point where samples are generated
 static double WARN_UNUSED calculateSample(int n, OFDM_state_t *OFDMstate)
 {
@@ -1027,7 +774,7 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
             // the sample value used in calculations, to be normalized
             double sampleValue;
             // sample value after put into signed integer range, then split into bytes for file writing and audio output
-            int32_to_bytes_t normalizedSampleValue;
+            sample_32_converter_t normalizedSampleValue;
             // holds each individual byte as it's written out Little Endian style
             char byte;
 

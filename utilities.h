@@ -17,20 +17,6 @@ typedef enum
     AWAITING_SAMPLES,
 } buffered_data_return_t;
 
-typedef enum
-{
-    ALLIGNED = 0,
-    MIDPOINT = 1,
-    NODEBUG,
-} dft_debug_t;
-
-typedef enum
-{
-    NO_LOCK,
-    SYMBOL_LOCK,
-    PHASE_LOCK,
-} timing_lock_t;
-
 // used for constellation constellations
 typedef enum
 {
@@ -126,7 +112,6 @@ typedef struct
     };
 } debugPlots_t;
 
-
 typedef struct __attribute__((packed)) riff_header
 {
     union
@@ -154,7 +139,7 @@ typedef struct __attribute__((packed)) riff_header
 typedef union __attribute__((packed))
 {
     int32_t value;
-    uint8_t byte[sizeof(int32_t)];
+    uint8_t bytes[sizeof(int32_t)];
 } sample_32_converter_t;    // union to help convert from bytes to integer to double
 
 typedef struct
@@ -212,22 +197,6 @@ typedef struct
     int sampleRate;
 } overlap_save_buffer_double_t;
 
-// this is a bit lame. should use complex datatype
-typedef struct
-{
-    double InPhase;
-    double Quadrature;
-} iqsample_t;
-
-typedef struct __attribute__((packed))
-{
-    union
-    {
-        int32_t value;
-        uint8_t bytes[sizeof(int32_t)];
-    };
-} int32_to_bytes_t;
-
 // a structure for splitting out one bit at a time from a byte
 // for implementing a hoffman tree code scheme
 typedef struct
@@ -242,11 +211,8 @@ typedef struct
 typedef struct huffman_tree_t
 {
     char isLeaf;    // is it a leaf with an IQ value, or does it have children
-
     struct huffman_tree_t *child[2];    // the two children
-
     int constellationIndex;   // the index of the constellation point 
-
 } huffman_tree_t;
 
 typedef struct
@@ -257,16 +223,6 @@ typedef struct
     huffman_tree_t* huffmanTree;    // a binary tree used for encoding a bit stream into constellation points
 
 } constellation_complex_t;
-
-typedef struct
-{
-    double carrierFrequency;
-    double carrierPhase;            // probably not going to use in the end.
-    _Complex double IQsamplingTransform;         // used to transform the IQ samples to compensate for carrier phase and amplitude mismatches (ln(amp) + i*phase)
-    double k;  // number of carrier cycles per sample
-    double symbolPeriod;    // number of audio samples per symbol
-    double selectedIQsamples[4];    // the closest samples to ideal sample time and mid symbol sample time for gardner algorithm
-} QAM_properties_t;
 
 typedef struct
 {
@@ -413,14 +369,6 @@ void initializeCircularBuffer_double(circular_buffer_double_t*, int, int);
 void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t*, int);
 void generateHuffmanTree(constellation_complex_t*);
 _Complex double traverseHuffmanTree(OFDM_state_t*, constellation_complex_t*);
-
-// some functions to generate IQ streams with different properties
-iqsample_t impulse(int, int);
-iqsample_t alternateI(int);
-iqsample_t alternateQ(int);
-iqsample_t randomQAM(int);
-iqsample_t randomQAM_withPreamble(int, int);
-iqsample_t sequentialIQ(int, int);
 
 // some IQ generators for the OFDM implimentation
 // generate a linear constellation on the I axis of 'levels' number of points

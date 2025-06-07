@@ -103,8 +103,6 @@ void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t *buf, int lengt
         fprintf(stderr, "cahnnelSimulationBuffer failed to allocate: %s\n", strerror(errno));
 }
 
-
-
 void generateHuffmanTree(constellation_complex_t *constellation)
 {
     // generate a huffman tree based on the number of points in the given constellation object
@@ -205,64 +203,6 @@ complex double traverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_comple
     }
 
     return constellation->points[node->constellationIndex];
-}
-
-// some functions to generate IQ streams with different properties
-iqsample_t impulse(int symbolIndex, int impulseTime)
-{
-    iqsample_t sample = {0, 0};
-    if(symbolIndex == impulseTime)
-        sample.InPhase = 1;
-    return sample;
-}
-
-iqsample_t alternateI(int symbolIndex)
-{
-    iqsample_t sample = {symbolIndex % 2 * 2 - 1, 0};
-    //iqsample_t sample = {symbolIndex % 2, 0};
-    return sample;
-}
-
-iqsample_t alternateQ(int symbolIndex)
-{
-    iqsample_t sample = {0, symbolIndex % 2 * 2 - 1};
-    //iqsample_t sample = {symbolIndex % 2, 0};
-    return sample;
-}
-
-iqsample_t randomQAM(int square)
-{
-    // square is the number of states of I and of Q, total states is square squared
-    // I and Q values returned between -1 and 1
-    iqsample_t sample = {0, 0};
-    sample.InPhase = (double)(rand() % square) / (square - 1) * 2 - 1;
-    sample.Quadrature = (double)(rand() % square) / (square - 1) * 2 - 1;
-    return sample;
-}
-
-iqsample_t randomQAM_withPreamble(int symbolIndex, int square)
-{
-    iqsample_t sample = {0, 0};
-    srand((unsigned int)symbolIndex); // to get a stable random sequence everytime a specific symbol is requested
-    int preamble = 150; // length of preamble in symbols
-    if (symbolIndex < preamble)
-    {
-        // add a preamble that's easy to get rough time sync to
-        sample = alternateI(symbolIndex);
-    } else { // choose a new random QAM IQ value at start of every total period
-        // then start sending random data
-        sample = randomQAM(square);
-    }
-    return sample;
-}
-
-iqsample_t sequentialIQ(int symbolIndex, int square)
-{
-    iqsample_t symbol;
-    // sequentially hit all the IQ values in order in the constelation defined by power
-    symbol.InPhase = (double)(symbolIndex % square) / (square - 1) * 2 - 1;
-    symbol.Quadrature = (double)(symbolIndex / square % square) / (square - 1) * 2 - 1;
-    return symbol;
 }
 
 // some IQ generators for the OFDM implimentation
