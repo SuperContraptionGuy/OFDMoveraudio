@@ -308,7 +308,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                 }
                                 // now do the transform
                                 if(OFDMstate->state.symbolIndex%2 == 0 || OFDMstate->state.symbolIndex < 2)    // only do fft for symetric symbols and first of the duplicate symbols
-                                fftw_execute(OFDMstate->fftwPlan);
+                                    fftw_execute(OFDMstate->fftwPlan);
                                 // time domain samples are now in the OFDMstate->OFDMsymbol.timeDomain array
                             }
 
