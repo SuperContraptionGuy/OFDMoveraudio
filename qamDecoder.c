@@ -640,9 +640,13 @@ buffered_data_return_t timingPeakDetectionFilter(const circular_buffer_double_t 
     // if the maximum occurs between the minima
     //double lowerThreshold = 0.2;
     //double upperThreshold = 0.25;
-    double lowerThreshold = windowAverage == 0 ? 0.1 : windowAverage->sample / 3;
-    double upperThreshold = windowAverage == 0 ? 0.1 : windowAverage->sample * 1.5;
+    //double lowerThreshold = windowAverage == 0 ? 0.1 : windowAverage->sample / 3;
+    //double upperThreshold = windowAverage == 0 ? 0.1 : windowAverage->sample * 1.5;
+    //double lowerThreshold = OFDMstate->receivedRMS.sample == 0 ? 0.5 : OFDMstate->receivedRMS.sample;
+    //double upperThreshold = OFDMstate->receivedRMS.sample == 0 ? 1 : OFDMstate->receivedRMS.sample * 2;
     //double upperThreshold = lowerThreshold * 1.25;
+    double lowerThreshold = 0.1;
+    double upperThreshold = 0.5;
     
     if(debugPlots.OFDMtimingSyncEnabled && inputSamples->n % 500 == 0)
     {
@@ -1100,14 +1104,14 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
         // initialize buffer to hold input samples for further processing
         initializeCircularBuffer_double(&OFDMstate->preambleDetectorInputBuffer, OFDMstate->symbolPeriod * 1.5, OFDMstate->sampleRate);
 
-        OFDMstate->disableSFOestimation = 0;
+        OFDMstate->disableSFOestimation = 1;
         srand(time(NULL));
         if(OFDMstate->disableSFOestimation)
         {
             //OFDMstate->samplingFrequencyOffsetEstimate = 48/pow(10,6);
             //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
             //OFDMstate->samplingFrequencyOffsetResidual = -OFDMstate->samplingFrequencyOffsetEstimate;
-            OFDMstate->samplingFrequencyOffsetEstimate = 0;
+            OFDMstate->samplingFrequencyOffsetEstimate = -10 / pow(10,6);
             OFDMstate->samplingFrequencyOffsetResidual = 0;
         } else {
             //OFDMstate->samplingFrequencyOffsetEstimate = (rand()%120 - 60)/pow(10, 6); // initial assumed sampling error. can be set to an inital value for testing the estimator
@@ -1226,6 +1230,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
     // add sample to the ofdm symbol window buffer
     OFDMstate->preambleDetectorInputBuffer.n = retimedSample.sampleIndex;
 
+    // run general channel statistics for autocorrelation and RMS determination
 
     // run the state machine
     switch(OFDMstate->state.frame)
@@ -1257,12 +1262,20 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                 pow(point_d2l, 2) -
                 pow(point_dl, 2);
 
+            OFDMstate->receivedRMS.sample = sqrt(secondHalfEnergy / OFDMstate->preambleDetectorInputBuffer.length);
+            OFDMstate->receivedRMS.sampleRate = 0;
+            OFDMstate->receivedRMS.sampleIndex = 0;
+
             // I think this causes issues with quiet tones auto correlating to high values and triggering a frame detection. I don't know the solution
-            OFDMstate->autoCorrelation.sample = fabs(iterativeAutocorrelation) / secondHalfEnergy; // normalization to remove average gain dependance
-            if(secondHalfEnergy == 0)
-                OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
+            //OFDMstate->autoCorrelation.sample = fabs(iterativeAutocorrelation) / secondHalfEnergy; // normalization to remove average gain dependance
+            //if(secondHalfEnergy == 0)
+                //OFDMstate->autoCorrelation.sample = 0;  // eliminate divide by zero error
             // uncomment to disable the shitty auto gain
-            OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation / 10); // enable if the autocorrelation normalization is to be ignored
+            //OFDMstate->autoCorrelation.sample = (iterativeAutocorrelation / 10); // enable if the autocorrelation normalization is to be ignored
+            //OFDMstate->autoCorrelation.sample = sqrt(fabs(iterativeAutocorrelation) / ((double)OFDMstate->preambleDetectorInputBuffer.length / 2)); // enable if the autocorrelation normalization is to be ignored
+            double iterAuto_2 = pow(iterativeAutocorrelation, 2);
+            double secHaEn_2 = pow(secondHalfEnergy, 2);
+            OFDMstate->autoCorrelation.sample = secHaEn_2 == 0 ? 0 : iterAuto_2/ secHaEn_2; // enable if the autocorrelation normalization is to be ignored
 
             // average filtered auto correlation signal
             OFDMstate->autoCorrelationAverageBuffer.buffer[OFDMstate->autoCorrelationAverageBuffer.insertionIndex] = OFDMstate->autoCorrelation.sample;
@@ -1290,8 +1303,11 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
             if(debugPlots.OFDMtimingSyncEnabled && retimedSample.sampleIndex % 500 == 0)
             {
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", retimedSample.sampleIndex, 1, retimedSample.sample);
-                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 8, windowAverage.sample);
+                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 8, windowAverage.sample);
                 fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 4, averageValue.sample);
+                fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 11, OFDMstate->receivedRMS.sample);
+                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 12, iterAuto_2);
+                //fprintf(debugPlots.OFDMtimingSyncStdin, "%i %i %f\n", averageValue.sampleIndex, 13, secHaEn_2);
             }
 
             // preambe triggered
@@ -1349,14 +1365,15 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                         preambleIndex += OFDMstate->preambleDetectorInputBuffer.length;
 
                     // copy it in order to the fftw buffer
-                    OFDMstate->OFDMsymbol.timeDomain.buffer[i] = OFDMstate->preambleDetectorInputBuffer.buffer[preambleIndex];
+                    // correct for estimated RMS
+                    OFDMstate->OFDMsymbol.timeDomain.buffer[i] = OFDMstate->preambleDetectorInputBuffer.buffer[preambleIndex] / OFDMstate->receivedRMS.sample;
 
                     if(debugPlots.OFDMdecoderEnabled)
                     {
                         // draw snipped out portion
                         //int plotIndex = 3 + OFDMstate->state.processedSymbols;
                         int plotIndex = 3;
-                        fprintf(debugPlots.OFDMdecoderStdin, "%li %i %f\n", OFDMstate->state.processedSymbols * OFDMstate->symbolPeriod + i + OFDMstate->guardPeriod, plotIndex, OFDMstate->OFDMsymbol.timeDomain.buffer[i] - 1);
+                        fprintf(debugPlots.OFDMdecoderStdin, "%li %i %f\n", OFDMstate->state.processedSymbols * OFDMstate->symbolPeriod + i + OFDMstate->guardPeriod, plotIndex, OFDMstate->OFDMsymbol.timeDomain.buffer[i] - 7);
                     }
                 }
 
@@ -1365,7 +1382,8 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                 // correct for channel estimate
                 for(int k = 0; k < OFDMstate->channels; k++)
                 {
-                    OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] /= OFDMstate->channelEstimate[k];
+                    // normalize the dft and correct for channel effects
+                    OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] /= OFDMstate->channelEstimate[k] * sqrt(OFDMstate->ofdmPeriod);
                 }
                 
 
@@ -1749,7 +1767,7 @@ int main(void)
     //debugPlots.channelFilterEnabled = 1;
     debugPlots.OFDMtimingSyncEnabled = 1;
     //debugPlots.OFDMdecoderEnabled = 1;
-    //debugPlots.OFDMrawIQEnabled = 1;
+    debugPlots.OFDMrawIQEnabled = 1;
     debugPlots.OFDMsfoEstimatorEnabled = 1;
     //debugPlots.OFDMinterpolatorEnabled = 1;
     //debugPlots.OFDMequalizerIQEnabled = 1;
@@ -2076,13 +2094,12 @@ int main(void)
         "--legend 0 \"preamble auto correlation\" "
         "--legend 1 \"Channel simulated samples\" "
         "--legend 2 \"original samples\" "
-        "--legend 3 \"preamble autor correlation derivative\" "
-        "--legend 4 \"preamble auto correlation average\" "
-        "--legend 5 \"preamble auto correlation derivative average\" "
         "--legend 6 \"OFDM Transmission found, at given offset\" "
         "--legend 7 \"Plateu Estimation Points\" "
-        //"--legend 7 \"d+l * d+2l\" "
         "--legend 8 \"symbol wide average\" "
+        "--legend 9 \"lower threshold\" "
+        "--legend 10 \"upper threshold\" "
+        "--legend 11 \"Recieved Signal RMS\" "
 
     ;
     if(debugPlots.OFDMtimingSyncEnabled)
@@ -2213,7 +2230,7 @@ int main(void)
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 120; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 60; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer

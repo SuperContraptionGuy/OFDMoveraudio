@@ -391,6 +391,7 @@ typedef struct
 
     sample_double_t autoCorrelation;        // schmidl timing signal
     sample_double_t autoCorrelationDerivative;
+    sample_double_t receivedRMS;    // RMS of the recieved signal within the window
     circular_buffer_double_t autoCorrelationAverageBuffer;
     circular_buffer_double_t autoCorrelationDerivativeAverageBuffer;           // avarage for the derivative thing
     
