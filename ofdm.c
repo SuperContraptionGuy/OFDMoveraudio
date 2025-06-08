@@ -178,8 +178,8 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->state.frameStart = n;
         
         // initialize channel simulation filter
-        OFDMstate->simulateNoise = 1;
-        OFDMstate->simulateChannel = 1;
+        OFDMstate->simulateNoise = 0;
+        OFDMstate->simulateChannel = 0;
 
         OFDMstate->dataInput = fopen("inputData", "r");
         OFDMstate->bitOffset = 0;

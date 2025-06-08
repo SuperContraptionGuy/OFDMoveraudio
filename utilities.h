@@ -84,7 +84,9 @@ typedef struct
     FILE* OFDMrawIQStdin;
     FILE* OFDMinterpolatorStdin;
     FILE* OFDMsfoEstimatorStdin;
+    FILE* OFDMequalizerErrorIQStdin;
     FILE* OFDMequalizerIQStdin;
+    FILE* OFDMdataIQStdin;
     union
     {
         struct
@@ -105,7 +107,9 @@ typedef struct
             unsigned int OFDMrawIQEnabled           : 1;
             unsigned int OFDMinterpolatorEnabled    : 1;
             unsigned int OFDMsfoEstimatorEnabled    : 1;
+            unsigned int OFDMequalizerErrorIQEnabled: 1;
             unsigned int OFDMequalizerIQEnabled     : 1;
+            unsigned int OFDMdataIQEnabled          : 1;
 
         };
             unsigned long int flags;
@@ -343,7 +347,9 @@ typedef struct
     int disableSFOestimation;   // flag to disable any sfo corrections
     circular_buffer_complex_t sfoFirstSymbol;   // sampling frequency offset detector buffer to hold the previous IQ samples
 
-    _Complex double* channelEstimate;  // equalizer parameters
+    _Complex double* initialChannelEstimate;    // estimate generated during preamble
+    _Complex double* channelEstimate;  // equalizer parameters updated continuously during data period
+    _Complex double* pilotChannelEstimate;  // equalizer parameters continuously generated for pilot channels
 
     sample_double_t autoCorrelation;        // schmidl timing signal
     sample_double_t autoCorrelationDerivative;
@@ -370,6 +376,7 @@ void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t*, int);
 void generateHuffmanTree(constellation_complex_t*);
 _Complex double traverseHuffmanTree(OFDM_state_t*, constellation_complex_t*);
 
+void plotPointPerSubchannel(FILE*, _Complex double, int, double, int, int);
 // some IQ generators for the OFDM implimentation
 // generate a linear constellation on the I axis of 'levels' number of points
 void fftw_ASK(int, constellation_complex_t*);

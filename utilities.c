@@ -22,7 +22,7 @@ void initializeOFDMstate(OFDM_state_t *OFDMstate)
     OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
     OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
     OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
-    OFDMstate->pilotSymbolsPitch = 100;
+    OFDMstate->pilotSymbolsPitch = 25;
     
     // initialize fftw arrays for both recieve and transmit
     initializeCircularBuffer_fftw_complex(&OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->channels, 0);
@@ -42,17 +42,18 @@ void initializeOFDMstate(OFDM_state_t *OFDMstate)
         } else {
 
             // for data channels
-            fftw_squareQAM(i, &OFDMstate->constellations[i]);
+            //fftw_squareQAM(i, &OFDMstate->constellations[i]);
+            fftw_hexQAM(i, &OFDMstate->constellations[i]);
             /*
-               if(i / 16 == 0)
-               fftw_hexQAM(i / 16, &OFDMstate->constellations[i % 16]);
-               else if(i / 16 == 1)
-               fftw_squareQAM(i / 16, &OFDMstate->constellations[i % 16]);
-               else if(i / 16 == 1)
-               fftw_PSK(i / 16, &OFDMstate->constellations[i % 16]);
-               else if(i / 16 == 1)
-               fftw_ASK(i / 16, &OFDMstate->constellations[i % 16]);
-               */
+            if(i / 16 == 0)
+                fftw_hexQAM(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
+            else if(i / 16 == 1)
+                fftw_squareQAM(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
+            else if(i / 16 == 2)
+                fftw_PSK(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
+            else if(i / 16 == 3)
+                fftw_ASK(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
+            */
         }
 
         // generate the huffman tree for the number of points in the constellation
@@ -205,6 +206,25 @@ complex double traverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_comple
     return constellation->points[node->constellationIndex];
 }
 
+void plotPointPerSubchannel(FILE* Stdin, _Complex double value, int k, double normalizationFactor, int channels, int plotIndex)
+{
+    // draw a point for every subchannel
+    //double normalizationFactor = sqrt(OFDMstate->ofdmPeriod) * 2 / 1;   // sizing the individual charts
+    //double normalizationFactor = 8;
+    // organize plots in a grid from left to right, bottom to top starting at the origin, roughly square
+    int square = (int)ceil(sqrt(channels));
+    double x = ((k % square));
+    double y = ((k / square));
+
+    // plot index for coloring preamble samples
+    //int plotIndex = 0;
+    // plot each point
+    fprintf(Stdin,
+            "%f %i %f\n",
+            x + creal(value) / normalizationFactor,
+            plotIndex,
+            y + cimag(value) / normalizationFactor);
+}
 // some IQ generators for the OFDM implimentation
 
 // generate a linear constellation on the I axis of 'levels' number of points
