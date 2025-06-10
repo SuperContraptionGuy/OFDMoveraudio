@@ -4,7 +4,7 @@ CC := gcc
 
 SRCS := ofdm.c ofdmDecoder.c
 OBJS := $(addprefix $(BUILD_DIR)/,$(SRCS:.c=.o))
-DEPS := $(OBJS:.o:.d)
+DEPS = $(OBJS:%.o=%.d)
 
 DEPFLAGS = -MT "$@" -MMD -MP -MF "$(BUILD_DIR)/$*.d"
 
@@ -64,4 +64,5 @@ clean:
 	@rm -rf $(BUILD_DIR)
 
 $(DEPS): ;
-include $(wildcard $(DEPS))
+
+include $(DEPS)

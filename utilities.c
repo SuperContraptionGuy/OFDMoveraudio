@@ -16,20 +16,21 @@
 
 void initializeOFDMstate(OFDM_state_t *OFDMstate)
 {
+    OFDMstate->duration = 30;
     // initialize the OFDM basic parameters
     //OFDMstate->sampleRate = 44100;
     OFDMstate->guardPeriod = (1<<12);  // 2^12=1024 closest power of 2 to the impulse response length, slightly shorter
     OFDMstate->ofdmPeriod = OFDMstate->guardPeriod * 4;   // dunno what the best OFDM period is compared to the guard period. I assume longer is better for channel efficiency, but maybe it's worse for noise? don't know
     OFDMstate->symbolPeriod = OFDMstate->guardPeriod + OFDMstate->ofdmPeriod;
     OFDMstate->channels = OFDMstate->ofdmPeriod / 2 + 1;  // half due to using real symbols (ie, not modulating to higher frequency carrier wave but staying in baseband)
-    OFDMstate->pilotSymbolsPitch = 25;
+    OFDMstate->pilotSymbolsPitch = 5;
     
     // initialize fftw arrays for both recieve and transmit
     initializeCircularBuffer_fftw_complex(&OFDMstate->OFDMsymbol.frequencyDomain, OFDMstate->channels, 0);
     initializeCircularBuffer_double(&OFDMstate->OFDMsymbol.timeDomain, OFDMstate->ofdmPeriod, 0);
 
     // initialize constellations and their huffman trees
-    OFDMstate->constellationsLength = 16;
+    OFDMstate->constellationsLength = 2;
     OFDMstate->constellations = malloc(sizeof(constellation_complex_t) * OFDMstate->constellationsLength);
     if(OFDMstate->constellations == NULL)
         fprintf(stderr, "constellations failed to allocate: %s\n", strerror(errno));
@@ -42,8 +43,9 @@ void initializeOFDMstate(OFDM_state_t *OFDMstate)
         } else {
 
             // for data channels
-            //fftw_squareQAM(i, &OFDMstate->constellations[i]);
-            fftw_hexQAM(i, &OFDMstate->constellations[i]);
+            fftw_squareQAM(i+1, &OFDMstate->constellations[i]);
+            //fftw_ASK(2, &OFDMstate->constellations[i]);
+            //fftw_hexQAM(i, &OFDMstate->constellations[i]);
             /*
             if(i / 16 == 0)
                 fftw_hexQAM(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
@@ -104,12 +106,22 @@ void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t *buf, int lengt
         fprintf(stderr, "cahnnelSimulationBuffer failed to allocate: %s\n", strerror(errno));
 }
 
+static inline void setChildDepth(huffman_tree_t *node)
+{
+    int newDepth = node->depth + 1;
+    for(int i = 0; i < 2; i++)  // two children
+    {
+        node->child[i]->depth = newDepth;
+        if(!node->child[i]->isLeaf)
+            setChildDepth(node->child[i]);
+    }
+}
+
 void generateHuffmanTree(constellation_complex_t *constellation)
 {
     // generate a huffman tree based on the number of points in the given constellation object
     // and add a pointer to the tree in the constellation object
     // assuming all points must be as equaprobable as possible (won't be possible except powers of 2 number of points)
-
 
     // linked list
     typedef struct listElem
@@ -131,10 +143,13 @@ void generateHuffmanTree(constellation_complex_t *constellation)
 
         roots[i].huffmanTree = &huffmanList[i];
         roots[i].huffmanTree->isLeaf = 1;
+        //roots[i].huffmanTree->isRoot = 0;
+        roots[i].huffmanTree->depth = 0;
         roots[i].huffmanTree->constellationIndex = i;
         // clear the children pointers
         roots[i].huffmanTree->child[0] = 0;
         roots[i].huffmanTree->child[1] = 0;
+        roots[i].huffmanTree->parent = 0;
     }
 
     int rootsNumber = constellation->length;
@@ -155,8 +170,16 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         // we'll reuse the oldRoot linked list element for the new huffman node
         oldRoot->huffmanTree = malloc(sizeof(huffman_tree_t));  // create a new huffman node, adding the two found nodes as children
         oldRoot->huffmanTree->isLeaf = 0;
+        //oldRoot->huffmanTree->isRoot = 0;
+        oldRoot->huffmanTree->depth = 0;
         oldRoot->huffmanTree->child[0] = huffman1;
         oldRoot->huffmanTree->child[1] = huffman2;
+        huffman1->parent = oldRoot->huffmanTree;
+        huffman1->edgeValue = 0;
+        //huffman1->depth++;
+        huffman2->parent = oldRoot->huffmanTree;
+        huffman2->edgeValue = 1;
+        //huffman2->depth++;
 
         // clear the constellation index field
         oldRoot->huffmanTree->constellationIndex = -1;
@@ -178,32 +201,122 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         rootsNumber--;  // subtract one from the length of the linked list
     }
 
+    // generate depth numbers
+    setChildDepth(root->huffmanTree);
+
+    //root->huffmanTree->isRoot = 1;
+
     // at the end of the loop, we should have a huffman tree constructed and pointed to by the root liste item
-    constellation->huffmanTree = root->huffmanTree;
+    constellation->huffmanTreeRoot = root->huffmanTree;
+    constellation->huffmanTreeLeaves = huffmanList;
+}
+
+void getByte(OFDM_state_t *OFDMstate)
+{
+    // get a new byte
+
+    // random number sequence to randomize it
+    long int randomIntegerData;
+    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+    char randomChar = (char)randomIntegerData;
+
+    // xor random with data to randomize it
+    OFDMstate->ioByte = fgetc(OFDMstate->dataInput) ^ randomChar;
+    //OFDMstate->ioByte = fgetc(OFDMstate->dataInput);
+    //OFDMstate->ioByte = randomChar;
+    //if(OFDMstate->ioByte == EOF)  // what if it's end of file
+}
+void sendByte(OFDM_state_t *OFDMstate)
+{
+    // send out a whole byte
+    //lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+
+    // random number sequence to randomize it
+    long int randomIntegerData;
+    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+    char randomChar = (char)randomIntegerData;
+
+    // xor random with data to randomize it
+    OFDMstate->ioByte ^= randomChar;
+
+    fputc(OFDMstate->ioByte, OFDMstate->dataOutput);
+
+    OFDMstate->ioByte = 0;
 }
 
 complex double traverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_complex_t *constellation)
 {
     // advance the bit pointer and consume bytes from dataInput file descriptor until a huffman leaf is reached
-    huffman_tree_t *node = constellation->huffmanTree;
-    char bitmask = 1;
-    OFDMstate->inputByte = 85;
+    huffman_tree_t *node = constellation->huffmanTreeRoot;
+    unsigned char bitmask = 1;
     while(!node->isLeaf)
     {
         bitmask = 1 << OFDMstate->bitOffset;
 
-        node = node->child[(bitmask & OFDMstate->inputByte) > 0];
+        unsigned char edgeValue = (bitmask & OFDMstate->ioByte) > 0;
+        node = node->child[edgeValue];
+
         if(OFDMstate->bitOffset >= 7)
         {
-            // get a new byte
+            getByte(OFDMstate);
             OFDMstate->bitOffset = 0;
         } else {
             OFDMstate->bitOffset++;
         }
-        //OFDMstate->bitOffset = OFDMstate->bitOffset == 7 ? OFDMstate->bitOffset = 0 : OFDMstate->bitOffset+1;
     }
 
     return constellation->points[node->constellationIndex];
+}
+
+void reverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_complex_t *constellation, int index)
+{
+    huffman_tree_t *node = &constellation->huffmanTreeLeaves[index];
+    unsigned long int bitmask = 1;
+    int maxDepth = node->depth;    // number of bits to be delivered by the current symbol
+    unsigned long int placeHolderByte = 0;   // holds the resulting bit stream for the current symbol
+    //while(!node->isRoot)
+    for(int depth = node->depth; depth > 0; depth--)    // storing bits in correct order (reverse tree traversal)
+    {
+        unsigned char edgeValue = node->edgeValue;   // either 0 or 1
+        node = node->parent;
+
+        bitmask = edgeValue << (depth - 1);
+        placeHolderByte = placeHolderByte | bitmask;
+    }
+
+    int placeHolderOffset = 0;
+    while(placeHolderOffset < maxDepth)
+    {
+        unsigned char value = ((1 << placeHolderOffset) & placeHolderByte) > 0;    // get the next bit from the place holder
+        placeHolderOffset++;
+        bitmask = value << OFDMstate->bitOffset;    // either a 0 or 1 in right position for the next
+        //bitmask = bitmask >> node->depth;               // compensate for traversing
+        OFDMstate->ioByte = OFDMstate->ioByte | bitmask;    // write bit to working byte
+        if(OFDMstate->bitOffset >= 7)
+        {
+            sendByte(OFDMstate);
+            OFDMstate->bitOffset = 0;
+        } else {
+            OFDMstate->bitOffset++;
+        }
+    }
+}
+
+int quantizeIQsample(constellation_complex_t *constellation, _Complex double receivedIQ)
+{
+    // I'll try an easy inefficient algorithm, just test for nearest constellation point
+    double minimumDistance = cabs(receivedIQ - constellation->points[0]);
+    int nearestIndex = 0;
+    for(int i = 1; i < constellation->length; i++)
+    {
+        double newDistance = cabs(receivedIQ - constellation->points[i]);
+        if(newDistance < minimumDistance)
+        {
+            minimumDistance = newDistance;
+            nearestIndex = i;
+        }
+    }
+    return nearestIndex;
 }
 
 void plotPointPerSubchannel(FILE* Stdin, _Complex double value, int k, double normalizationFactor, int channels, int plotIndex)

@@ -182,6 +182,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
         OFDMstate->simulateChannel = 0;
 
         OFDMstate->dataInput = fopen("inputData", "r");
+        getByte(OFDMstate); // get first byte and random number
         OFDMstate->bitOffset = 0;
         OFDMstate->generatedDataOutput = fopen("senderSequence", "w");
 
@@ -297,7 +298,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                             lrand48_r(&OFDMstate->preamblePilotsPRNG, &randomInteger);
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomInteger % constellation.length];
 
-                                            fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomInteger, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+                                            //fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomInteger, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
                                         } else {
                                             OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] =
                                                 0;
@@ -389,7 +390,7 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                         lrand48_r(&OFDMstate->pilotsPRNG, &randomIntegerPilot);
 
                                         OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerPilot % constellation.length];
-                                        fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+                                        //fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerPilot, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
 
                                     } else  // and use the rest for data channels 
                                     if(1)   // transmit on all other subchannels
@@ -402,11 +403,22 @@ buffered_data_return_t OFDM(int long n, sample_double_t *outputSample, OFDM_stat
                                     //if(k < center + width / 2 && k > center - width / 2)
                                     {
                                         
-                                        // picking a sequential constellation, and a random point in that constellation discluding the first entry
                                         constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
-                                        lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
-                                        OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerData % constellation.length];
-                                        fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+                                        if(0)
+                                        {
+                                            // picking a sequential constellation, and a random point in that constellation discluding the first entry
+                                            lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = constellation.points[randomIntegerData % constellation.length];
+                                            //fprintf(OFDMstate->generatedDataOutput, "n=%i k=%i %li: %lf+%lfi\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]), cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+                                        } else {
+                                            OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] = traverseHuffmanTree(OFDMstate, &constellation);
+                                            fprintf(OFDMstate->generatedDataOutput,
+                                                    "n=%i k=%i: %lf+%lfi\n",
+                                                    OFDMstate->state.symbolIndex,
+                                                    k,
+                                                    creal(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]),
+                                                    cimag(OFDMstate->OFDMsymbol.frequencyDomain.buffer[k]));
+                                        }
 
                                         //rescale if I'm using only a few channels for higher power 
                                         //OFDMstate->OFDMsymbol.frequencyDomain[k] *= (double)OFDMstate->channels / 10 / 30;
@@ -633,14 +645,16 @@ static int WARN_UNUSED generateSamplesAndOutput(char* filenameInput)
     // Supported sample rates from alsa-info.sh
     //     rates [0x560]: 44100 48000 96000 192000
     int sampleRate = 44100;
-    // total number of samples to generate
-    long length = sampleRate * 120;
     //long length = (1<<12) * 5 + sampleRate * 0.25;
     // the number of the current sample
     long n = 0;
 
     OFDM_state_t OFDMstate = {0};
     OFDMstate.sampleRate = sampleRate;
+    // total number of samples to generate
+    //long length = sampleRate * 120;
+    initializeOFDMstate(&OFDMstate);
+    long length = sampleRate * OFDMstate.duration;
 
     // length of the file write buffer, samples times 4 bytes per sample
     const int bufferLength = 100 * 4;

@@ -661,6 +661,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                 OFDMstate->initialChannelEstimate[k] = receivedIQ / expectedIQ;
                                 OFDMstate->channelEstimate[k] = OFDMstate->initialChannelEstimate[k];
 
+                                /*
                                 fprintf(
                                     OFDMstate->dataOutput,
                                     "n=%i k=%i %li: %lf+%lfi : %lf+%lfi : %lf+%lfi abs-> %lf %li\n",
@@ -676,6 +677,7 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                     cabs(OFDMstate->initialChannelEstimate[k]),
                                     OFDMstate->state.processedSymbols
                                 );
+                                */
                             }
                         }
                         // and on the third, do some calculations to estimate the sampling frequency offset
@@ -856,12 +858,12 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                             }
                         }
 
+                        double errorRate = 0;
                         // now process each data channel
                         for(int k = 1; k < OFDMstate->channels - 1; k++)
                         {
-                            // correct for channel equalization BROKEN TODO
+                            // correct for channel equalization
                             // no pilot info available for first symbol
-                            //if(OFDMstate->state.symbolIndex != 0 && k % OFDMstate->pilotSymbolsPitch != 0)
                             if(OFDMstate->state.symbolIndex != 0)
                             {
                                 // update the channelEstimate using information from the pilots
@@ -878,9 +880,10 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                     pilotAfterWeight * OFDMstate->pilotChannelEstimate[pilotAfterIndex];
                                 newEstimate *= OFDMstate->initialChannelEstimate[k];
 
+                                // limit corrections to high SNR pilots
                                 //if(cabs(OFDMstate->pilotChannelEstimate[pilotBeforeIndex]) > 0.5 && 
                                         //cabs(OFDMstate->pilotChannelEstimate[pilotAfterIndex]) > 0.5)
-                                if(1)
+                                if(1)   // use all pilots
                                 {
                                     if(OFDMstate->state.symbolIndex == 0)
                                     {
@@ -889,7 +892,6 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                         OFDMstate->channelEstimate[k] = newEstimate;
                                     }
                                 }
-                                    //OFDMstate->channelEstimate[k] = OFDMstate->pilotChannelEstimate[pilotBeforeIndex];
                             }
 
                             // correct for channel estimate, only for the data channels
@@ -911,43 +913,56 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                             {
                                 long int randomIntegerData;
 
-                                // now process again given the residual frequency error correction. might be able to combine with previous loop if I don't apply the correction until next symbol
-                                // correct for residual phase offsets since initial channel estimation
-                                //for(int k = 0; k < OFDMstate->channels; k++)
-                                //{
-                                // correct symbols for phase offsets due to residual SFO, over the course of 1 symbol.
-                                // not correct, not sure what the issue is yet
-                                //OFDMstate->OFDMsymbol.frequencyDomain.buffer[k] *= cexp(I * 2 * M_PI * (1) * OFDMstate->symbolPeriod / OFDMstate->ofdmPeriod * k * OFDMstate->samplingFrequencyOffsetResidual);
-                                //}
                                 // run a discriminator to classify the recieved symbols
                                 // TODO
-                                // we could run some graphs on the equalizer error here
 
-
-                                // checking the accuracy of the channel estimation given known data
-                                // picking a sequential constellation, and a random point in that constellation discluding the first entry
                                 constellation_complex_t constellation = OFDMstate->constellations[k%(OFDMstate->constellationsLength - 1) + 1];
-                                lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
-                                complex double expectedIQ = constellation.points[randomIntegerData % constellation.length];
                                 complex double receivedIQ = OFDMstate->OFDMsymbol.frequencyDomain.buffer[k];
-                                //fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), OFDMstate->state.processedSymbols);
-                                if(expectedIQ != 0) // make sure we can actually make an estimate, expected symbol isn't at the origin
-                                {
-                                    complex double estimatedEqualizerError = receivedIQ / expectedIQ;
+                                // I'll try an easy inefficient algorithm, just test for nearest constellation point
+                                int decodedConstellationIndex = quantizeIQsample(&constellation, receivedIQ);
 
-                                    // debug chart for the subchannel IQ plots
-                                    if(debugPlots.OFDMequalizerErrorIQEnabled)
+
+                                if(0)
+                                {
+                                    // checking the accuracy of the channel estimation given known data
+                                    // picking a sequential constellation, and a random point in that constellation discluding the first entry
+                                    lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
+                                    int expectedConstellationIndex = randomIntegerData % constellation.length;
+                                    complex double expectedIQ = constellation.points[expectedConstellationIndex];
+                                    //fprintf(OFDMstate->dataOutput, "n=%i k=%i %li: %lf+%lfi : %lf+%lfi %li\n", OFDMstate->state.symbolIndex, k, randomIntegerData, creal(expectedIQ), cimag(expectedIQ), creal(receivedIQ), cimag(receivedIQ), OFDMstate->state.processedSymbols);
+                                    if(decodedConstellationIndex != expectedConstellationIndex)
+                                        errorRate += 1. / OFDMstate->channels;
+                                        /*
+                                        fprintf(OFDMstate->dataOutput,
+                                                "n=%i k=%i integer=%li expected vs received Index=\t%i,%i\n",
+                                                OFDMstate->state.symbolIndex,
+                                                k,
+                                                randomIntegerData,
+                                                expectedConstellationIndex,
+                                                decodedConstellationIndex);
+                                        */
+                                    if(expectedIQ != 0) // make sure we can actually make an estimate, expected symbol isn't at the origin
                                     {
-                                        plotPointPerSubchannel(
-                                                debugPlots.OFDMequalizerErrorIQStdin,
-                                                estimatedEqualizerError,
-                                                k, 
-                                                4, 
-                                                OFDMstate->channels,
-                                                k);
+                                        complex double estimatedEqualizerError = receivedIQ / expectedIQ;
+
+                                        // debug chart for the subchannel IQ plots
+                                        if(debugPlots.OFDMequalizerErrorIQEnabled)
+                                        {
+                                            plotPointPerSubchannel(
+                                                    debugPlots.OFDMequalizerErrorIQStdin,
+                                                    estimatedEqualizerError,
+                                                    k, 
+                                                    4, 
+                                                    OFDMstate->channels,
+                                                    k);
+                                        }
                                     }
+                                } else {
+                                    reverseHuffmanTree(OFDMstate, &constellation, decodedConstellationIndex);
                                 }
                             }
+
+                            // plot channel estimate for all subchannels
                             if(debugPlots.OFDMequalizerIQEnabled)
                             {
                                 plotPointPerSubchannel(
@@ -959,6 +974,12 @@ buffered_data_return_t demodualteOFDM( const sample_double_t *sample, OFDM_state
                                         k + OFDMstate->channels);
                             }
                         }
+                        /*
+                        fprintf(OFDMstate->dataOutput,
+                                "n=%i errorRate=%f\n",
+                                OFDMstate->state.symbolIndex,
+                                errorRate);
+                                */
 
 
 
@@ -1529,11 +1550,12 @@ int main(void)
     //int upconvertionSampleRate = 192000;
 
     OFDM_state_t OFDMstate = {0};
+    initializeOFDMstate(&OFDMstate);
     OFDMstate.sampleRate = 44100;   // set the main sample rate for the decoder, but the incomming samples could have a higher rate
 
     // while there is data to recieve, not end of file -> right now just a fixed number of 2000
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 600; audioSampleIndex++)
-    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * 120; audioSampleIndex++)
+    for(int audioSampleIndex = 0; audioSampleIndex < sampleRate * OFDMstate.duration; audioSampleIndex++)
     //for(int audioSampleIndex = 0; audioSampleIndex < SYMBOL_PERIOD * 2000; audioSampleIndex++)
     {
         // recieve data on stdin, signed 32bit integer

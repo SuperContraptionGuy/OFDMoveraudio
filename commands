@@ -41,6 +41,7 @@ But the performance is much better with the mic gain lower. The waveforms don't 
 debugging with gdb
 
 make a fifo
+    mkfifo testFifo
     ffmpeg -i test.wav -f s32le pipe:1 > testFifo
 then in gdb in another terminal (or with & at end of las command), run with input from the fifo
     (gdb) r < testFifo

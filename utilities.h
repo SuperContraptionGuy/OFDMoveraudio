@@ -215,16 +215,28 @@ typedef struct
 typedef struct huffman_tree_t
 {
     char isLeaf;    // is it a leaf with an IQ value, or does it have children
+    //char isRoot;
+    int depth;  // how far away from the root is this node
+    struct huffman_tree_t *parent;  // parent
+    char edgeValue; // value of the edge connecting to parent, 0 or 1
     struct huffman_tree_t *child[2];    // the two children
     int constellationIndex;   // the index of the constellation point 
 } huffman_tree_t;
 
+typedef struct constellation_lut_t
+{
+    unsigned int length;    // number of bits represented by this point
+    unsigned int bits;  // the bits represented by a constellation point at this index
+} constellation_lut_t;
+
 typedef struct
 {
     _Complex double *points;   // a pointer to an array of points in the constellation
+    //constellation_lut_t *lut;   // a look up table from constellation point index to a bit encoding based on the huffmanTree
     int length;               // the number of points in the constellation
 
-    huffman_tree_t* huffmanTree;    // a binary tree used for encoding a bit stream into constellation points
+    huffman_tree_t* huffmanTreeRoot;    // a binary tree used for encoding a bit stream into constellation points
+    huffman_tree_t* huffmanTreeLeaves;    // a binary tree used for encoding a bit stream into constellation points
 
 } constellation_complex_t;
 
@@ -232,6 +244,7 @@ typedef struct
 {
     // Common between sender and reciever
     //
+    int duration;
     int sampleRate;
     int channels;
 
@@ -298,12 +311,13 @@ typedef struct
         } symbol;   // an atomic OFDM symbol
     } state;
 
+    unsigned char ioByte;     // the current working byte
+    int bitOffset;      // hold the offset in bits from the beginning of the current byte pulled from the dataInput file
+
     // Sender relevant
     //
 
     FILE* dataInput;    // pipe to read data from that will be sent of the channel
-    char inputByte;     // the current working byte
-    int bitOffset;      // hold the offset in bits from the beginning of the current byte pulled from the dataInput file
     FILE* generatedDataOutput;  // print the randomly generated data that was encoded in a file
 
     // array length of channels representing the current entire OFDM symbol
@@ -323,7 +337,6 @@ typedef struct
     fftw_OFDM_buffer_t IQrateDetectorSecondHalf;
     //circular_buffer_complex_t fftwIQrateDetectorFirstHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
     //circular_buffer_complex_t fftwIQrateDetectorSecondHalf;          // for holding a half ofdmPeriod DFT used in sample rate error detection
-
 
 
     // Reciever relevant
@@ -373,8 +386,13 @@ void initializeCircularBuffer_fftw_complex(circular_buffer_complex_t*, int, int)
 void initializeCircularBuffer_complex(circular_buffer_complex_t*, int, int);
 void initializeCircularBuffer_double(circular_buffer_double_t*, int, int);
 void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t*, int);
+
 void generateHuffmanTree(constellation_complex_t*);
+void getByte(OFDM_state_t*);
+void reverseHuffmanTree(OFDM_state_t*, constellation_complex_t*, int);
 _Complex double traverseHuffmanTree(OFDM_state_t*, constellation_complex_t*);
+
+int quantizeIQsample(constellation_complex_t*, _Complex double);
 
 void plotPointPerSubchannel(FILE*, _Complex double, int, double, int, int);
 // some IQ generators for the OFDM implimentation
