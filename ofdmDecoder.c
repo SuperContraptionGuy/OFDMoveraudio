@@ -1592,6 +1592,8 @@ int main(void)
 
     }
 
+    // deallocate OFDMstate variables
+
 
 exit:
     if (iq_plot_buffer != NULL)
@@ -1601,74 +1603,14 @@ exit:
     }
 
     // close the streams, allowing the plots to render and open a window, then wait for them to terminate in separate threads.
-    if((debugPlots.IQvsTimeStdin != NULL) && (fork() == 0))
+    for(int i = 0; i < sizeof(debugPlots.files) / sizeof(debugPlots.files[0]); i++)
     {
-        pclose(debugPlots.IQvsTimeStdin);
-        return 0;
-    }
-
-    if((debugPlots.IQplotStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.IQplotStdin);
-        return 0;
-    }
-
-    if((debugPlots.errorPlotStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.errorPlotStdin);
-        return 0;
-    }
-
-    if((debugPlots.waveformPlotStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.waveformPlotStdin);
-        return 0;
-    }
-
-    if((debugPlots.fftDebuggerStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.fftDebuggerStdin);
-        return 0;
-    }
-    if((debugPlots.eyeDiagramRealStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.eyeDiagramRealStdin);
-        return 0;
-    }
-    if((debugPlots.eyeDiagramImaginaryStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.eyeDiagramImaginaryStdin);
-        return 0;
-    }
-    if((debugPlots.filterDebugStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.filterDebugStdin);
-        return 0;
-    }
-    if((debugPlots.gardnerAlgoStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.gardnerAlgoStdin);
-        return 0;
-    }
-    if((debugPlots.OFDMtimingSyncStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.OFDMtimingSyncStdin);
-        return 0;
-    }
-    if((debugPlots.channelFilterStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.channelFilterStdin);
-        return 0;
-    }
-    if((debugPlots.OFDMdecoderStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.OFDMdecoderStdin);
-        return 0;
-    }
-    if((debugPlots.OFDMinterpolatorStdin != NULL) && (fork() == 0))
-    {
-        pclose(debugPlots.OFDMinterpolatorStdin);
-        return 0;
+        FILE* pipe = debugPlots.files[i];
+        if((pipe != NULL) && (fork() == 0))
+        {
+            pclose(pipe);
+            return 0;
+        }
     }
 
     // after all the data is recieved, generate a plot of IQ

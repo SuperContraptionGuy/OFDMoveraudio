@@ -68,25 +68,32 @@ typedef enum
 
 typedef struct
 {
-    FILE* waveformPlotStdin;
-    FILE* fftDebuggerStdin;
-    FILE* errorPlotStdin;
-    FILE* IQplotStdin;
-    FILE* IQvsTimeStdin;
-    FILE* eyeDiagramRealStdin;
-    FILE* eyeDiagramImaginaryStdin;
-    FILE* filterDebugStdin;
-    FILE* QAMdecoderStdin;
-    FILE* gardnerAlgoStdin;
-    FILE* OFDMtimingSyncStdin;
-    FILE* channelFilterStdin;
-    FILE* OFDMdecoderStdin;
-    FILE* OFDMrawIQStdin;
-    FILE* OFDMinterpolatorStdin;
-    FILE* OFDMsfoEstimatorStdin;
-    FILE* OFDMequalizerErrorIQStdin;
-    FILE* OFDMequalizerIQStdin;
-    FILE* OFDMdataIQStdin;
+    union
+    {
+        struct
+        {
+            FILE* fftDebuggerStdin;
+            FILE* waveformPlotStdin;
+            FILE* errorPlotStdin;
+            FILE* IQplotStdin;
+            FILE* IQvsTimeStdin;
+            FILE* eyeDiagramRealStdin;
+            FILE* eyeDiagramImaginaryStdin;
+            FILE* filterDebugStdin;
+            FILE* QAMdecoderStdin;
+            FILE* gardnerAlgoStdin;
+            FILE* OFDMtimingSyncStdin;
+            FILE* channelFilterStdin;
+            FILE* OFDMdecoderStdin;
+            FILE* OFDMrawIQStdin;
+            FILE* OFDMinterpolatorStdin;
+            FILE* OFDMsfoEstimatorStdin;
+            FILE* OFDMequalizerErrorIQStdin;
+            FILE* OFDMequalizerIQStdin;
+            FILE* OFDMdataIQStdin;
+        };
+        FILE* files[19];
+    };
     union
     {
         struct
@@ -233,7 +240,7 @@ typedef struct
 {
     _Complex double *points;   // a pointer to an array of points in the constellation
     //constellation_lut_t *lut;   // a look up table from constellation point index to a bit encoding based on the huffmanTree
-    int length;               // the number of points in the constellation
+    unsigned int length;               // the number of points in the constellation
 
     huffman_tree_t* huffmanTreeRoot;    // a binary tree used for encoding a bit stream into constellation points
     huffman_tree_t* huffmanTreeLeaves;    // a binary tree used for encoding a bit stream into constellation points
@@ -269,6 +276,7 @@ typedef struct
     struct drand48_data preamblePilotsPRNG;
     struct drand48_data pilotsPRNG;
     struct drand48_data predefinedDataPRNG;
+    struct drand48_data predefinedDataConstellationPermutationPRNG;
     struct drand48_data channelNoisePRNG;
 
     // constellations array
@@ -381,6 +389,7 @@ typedef struct
 //
 
 void initializeOFDMstate(OFDM_state_t*);
+void destroyOFDMstate(OFDM_state_t*);
 //void initializeCircularBuffer_complex(circular_buffer_complex_t*, int);
 void initializeCircularBuffer_fftw_complex(circular_buffer_complex_t*, int, int);
 void initializeCircularBuffer_complex(circular_buffer_complex_t*, int, int);
@@ -389,7 +398,7 @@ void initializeOverlapAndSaveBuffer(overlap_save_buffer_double_t*, int);
 
 void generateHuffmanTree(constellation_complex_t*);
 void getByte(OFDM_state_t*);
-void reverseHuffmanTree(OFDM_state_t*, constellation_complex_t*, int);
+void reverseHuffmanTree(OFDM_state_t*, constellation_complex_t*, unsigned int);
 _Complex double traverseHuffmanTree(OFDM_state_t*, constellation_complex_t*);
 
 int quantizeIQsample(constellation_complex_t*, _Complex double);

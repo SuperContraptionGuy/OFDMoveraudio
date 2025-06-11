@@ -43,9 +43,9 @@ void initializeOFDMstate(OFDM_state_t *OFDMstate)
         } else {
 
             // for data channels
-            fftw_squareQAM(i+1, &OFDMstate->constellations[i]);
+            //fftw_squareQAM(i+1, &OFDMstate->constellations[i]);
             //fftw_ASK(2, &OFDMstate->constellations[i]);
-            //fftw_hexQAM(i, &OFDMstate->constellations[i]);
+            fftw_hexQAM(i+1, &OFDMstate->constellations[i]);
             /*
             if(i / 16 == 0)
                 fftw_hexQAM(i / 16, &OFDMstate->constellations[i % OFDMstate->constellationsLength]);
@@ -69,7 +69,13 @@ void initializeOFDMstate(OFDM_state_t *OFDMstate)
     srand48_r(rand(), &OFDMstate->pilotsPRNG);
     srand48_r(rand(), &OFDMstate->predefinedDataPRNG);
     srand48_r(rand(), &OFDMstate->channelNoisePRNG);
+    srand48_r(rand(), &OFDMstate->predefinedDataConstellationPermutationPRNG);
 
+}
+
+void destroyOFDMstate(OFDM_state_t* OFDMstate)
+{
+    // destroy all the things
 }
 
 void initializeCircularBuffer_fftw_complex(circular_buffer_complex_t *buf, int length, int sampleRate)
@@ -113,7 +119,7 @@ static inline void setChildDepth(huffman_tree_t *node)
     {
         node->child[i]->depth = newDepth;
         if(!node->child[i]->isLeaf)
-            setChildDepth(node->child[i]);
+            setChildDepth(node->child[i/*th*/]);
     }
 }
 
@@ -147,8 +153,8 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         roots[i].huffmanTree->depth = 0;
         roots[i].huffmanTree->constellationIndex = i;
         // clear the children pointers
-        roots[i].huffmanTree->child[0] = 0;
-        roots[i].huffmanTree->child[1] = 0;
+        roots[i].huffmanTree->child[0/*th*/] = 0;
+        roots[i].huffmanTree->child[1/*th*/] = 0;
         roots[i].huffmanTree->parent = 0;
     }
 
@@ -172,8 +178,8 @@ void generateHuffmanTree(constellation_complex_t *constellation)
         oldRoot->huffmanTree->isLeaf = 0;
         //oldRoot->huffmanTree->isRoot = 0;
         oldRoot->huffmanTree->depth = 0;
-        oldRoot->huffmanTree->child[0] = huffman1;
-        oldRoot->huffmanTree->child[1] = huffman2;
+        oldRoot->huffmanTree->child[0/*th*/] = huffman1;
+        oldRoot->huffmanTree->child[1/*th*/] = huffman2;
         huffman1->parent = oldRoot->huffmanTree;
         huffman1->edgeValue = 0;
         //huffman1->depth++;
@@ -218,13 +224,18 @@ void getByte(OFDM_state_t *OFDMstate)
     // random number sequence to randomize it
     long int randomIntegerData;
     lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
-    char randomChar = (char)randomIntegerData;
+    unsigned char randomChar = randomIntegerData;
 
     // xor random with data to randomize it
-    OFDMstate->ioByte = fgetc(OFDMstate->dataInput) ^ randomChar;
+    int inputByte = fgetc(OFDMstate->dataInput);
     //OFDMstate->ioByte = fgetc(OFDMstate->dataInput);
     //OFDMstate->ioByte = randomChar;
-    //if(OFDMstate->ioByte == EOF)  // what if it's end of file
+
+    //if(inputByte == EOF)  // what if it's end of file
+
+    OFDMstate->ioByte = (unsigned char)inputByte ^ randomChar;
+
+    return;
 }
 void sendByte(OFDM_state_t *OFDMstate)
 {
@@ -234,12 +245,14 @@ void sendByte(OFDM_state_t *OFDMstate)
     // random number sequence to randomize it
     long int randomIntegerData;
     lrand48_r(&OFDMstate->predefinedDataPRNG, &randomIntegerData);
-    char randomChar = (char)randomIntegerData;
+    unsigned char randomChar = randomIntegerData;
 
     // xor random with data to randomize it
-    OFDMstate->ioByte ^= randomChar;
+    //OFDMstate->ioByte ^= randomChar;
+    unsigned char outputByte = OFDMstate->ioByte ^ randomChar;
 
-    fputc(OFDMstate->ioByte, OFDMstate->dataOutput);
+    //fputc(OFDMstate->ioByte, OFDMstate->dataOutput);
+    fputc(outputByte, OFDMstate->dataOutput);
 
     OFDMstate->ioByte = 0;
 }
@@ -254,7 +267,7 @@ complex double traverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_comple
         bitmask = 1 << OFDMstate->bitOffset;
 
         unsigned char edgeValue = (bitmask & OFDMstate->ioByte) > 0;
-        node = node->child[edgeValue];
+        node = node->child[edgeValue/*th*/];
 
         if(OFDMstate->bitOffset >= 7)
         {
@@ -265,13 +278,24 @@ complex double traverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_comple
         }
     }
 
-    return constellation->points[node->constellationIndex];
+    long int randomIndexOffset;
+    lrand48_r(&OFDMstate->predefinedDataConstellationPermutationPRNG, &randomIndexOffset);
+    //scramble indexes to get a statistically even distribution
+    unsigned int constellationIndex = (node->constellationIndex + (unsigned long int)randomIndexOffset) % constellation->length;
+    //int constellationIndex = node->constellationIndex;
+    return constellation->points[constellationIndex];
 }
 
-void reverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_complex_t *constellation, int index)
+void reverseHuffmanTree(OFDM_state_t *OFDMstate, constellation_complex_t *constellation, unsigned int receivedIndex)
 {
+    long int randomIndexOffset;
+    lrand48_r(&OFDMstate->predefinedDataConstellationPermutationPRNG, &randomIndexOffset);
+    //undo the index scramble
+    int index = (receivedIndex - ((unsigned long int)randomIndexOffset % constellation->length) + constellation->length) % constellation->length;
+
     huffman_tree_t *node = &constellation->huffmanTreeLeaves[index];
     unsigned long int bitmask = 1;
+    //int randomIndexOffset;  // random number used to randomize the constellation starting index to even out unequal probabilities
     int maxDepth = node->depth;    // number of bits to be delivered by the current symbol
     unsigned long int placeHolderByte = 0;   // holds the resulting bit stream for the current symbol
     //while(!node->isRoot)
